@@ -89,7 +89,7 @@ describe('BacktestPage', () => {
   it('renders shared surface inputs and prediction tracking outputs', async () => {
     render(<BacktestPage />);
 
-    const filterInput = await screen.findByPlaceholderText('Filter by stock code (leave empty for all)');
+    const filterInput = await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
     const windowInput = screen.getByPlaceholderText('10');
 
     expect(filterInput).toHaveClass('input-surface');
@@ -97,30 +97,30 @@ describe('BacktestPage', () => {
     expect(windowInput).toHaveClass('input-surface');
     expect(windowInput).toHaveClass('input-focus-glow');
 
-    expect(await screen.findByText('WIN')).toBeInTheDocument();
-    expect(screen.getByText('completed')).toBeInTheDocument();
+    expect(await screen.findByText('赢')).toBeInTheDocument();
+    expect(screen.getByText('已完成')).toBeInTheDocument();
     expect(screen.getByText('600519')).toBeInTheDocument();
     expect(screen.getByText('贵州茅台')).toBeInTheDocument();
     expect(screen.getByText('震荡偏多')).toBeInTheDocument();
-    expect(screen.getByText('UP')).toBeInTheDocument();
-    expect(screen.getByText('Window Return')).toBeInTheDocument();
-    expect(screen.getByText('Direction Match')).toBeInTheDocument();
-    expect(screen.getAllByLabelText('yes').length).toBeGreaterThan(0);
+    expect(screen.getByText('涨')).toBeInTheDocument();
+    expect(screen.getByText('窗口收益')).toBeInTheDocument();
+    expect(screen.getByText('方向匹配')).toBeInTheDocument();
+    expect(screen.getAllByLabelText('是').length).toBeGreaterThan(0);
   });
 
   it('filters results with stock code, window, and analysis date range when clicking Filter', async () => {
     render(<BacktestPage />);
 
-    const filterInput = await screen.findByPlaceholderText('Filter by stock code (leave empty for all)');
+    const filterInput = await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
     const windowInput = screen.getByPlaceholderText('10');
-    const fromInput = screen.getByLabelText('Analysis date from');
-    const toInput = screen.getByLabelText('Analysis date to');
+    const fromInput = screen.getByLabelText('分析起始日期');
+    const toInput = screen.getByLabelText('分析截止日期');
 
     fireEvent.change(filterInput, { target: { value: 'aapl' } });
     fireEvent.change(windowInput, { target: { value: '20' } });
     fireEvent.change(fromInput, { target: { value: '2026-03-01' } });
     fireEvent.change(toInput, { target: { value: '2026-03-31' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+    fireEvent.click(screen.getByRole('button', { name: '筛选' }));
 
     await waitFor(() => {
       expect(mockGetResults).toHaveBeenLastCalledWith({
@@ -142,12 +142,12 @@ describe('BacktestPage', () => {
   it('runs a backtest and refreshes results using the shared filter values', async () => {
     render(<BacktestPage />);
 
-    const filterInput = await screen.findByPlaceholderText('Filter by stock code (leave empty for all)');
+    const filterInput = await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
     const windowInput = screen.getByPlaceholderText('10');
 
     fireEvent.change(filterInput, { target: { value: 'tsla' } });
     fireEvent.change(windowInput, { target: { value: '15' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Run Backtest' }));
+    fireEvent.click(screen.getByRole('button', { name: '运行回测' }));
 
     await waitFor(() => {
       expect(mockRun).toHaveBeenCalledWith({
@@ -174,15 +174,15 @@ describe('BacktestPage', () => {
       });
     });
 
-    expect(await screen.findByText('Processed:')).toBeInTheDocument();
-    expect(screen.getByText('Saved:')).toBeInTheDocument();
+    expect(await screen.findByText('已处理:')).toBeInTheDocument();
+    expect(screen.getByText('已保存:')).toBeInTheDocument();
   });
 
   it('switches to next-day validation with the 1D shortcut', async () => {
     render(<BacktestPage />);
 
-    await screen.findByPlaceholderText('Filter by stock code (leave empty for all)');
-    fireEvent.click(screen.getByRole('button', { name: '1D Validation' }));
+    await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
+    fireEvent.click(screen.getByRole('button', { name: '1日验证' }));
 
     await waitFor(() => {
       expect(mockGetResults).toHaveBeenLastCalledWith({
@@ -200,8 +200,8 @@ describe('BacktestPage', () => {
       });
     });
 
-    expect(screen.getByText('Actual')).toBeInTheDocument();
-    expect(screen.getByText('Accuracy')).toBeInTheDocument();
-    expect(screen.getByText('Next-day validation mode compares AI predictions with the next trading day close.')).toBeInTheDocument();
+    expect(screen.getByText('实际走势')).toBeInTheDocument();
+    expect(screen.getByText('准确率')).toBeInTheDocument();
+    expect(screen.getByText('次日验证模式：将AI预测与下一交易日收盘价对比。')).toBeInTheDocument();
   });
 });

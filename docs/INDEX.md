@@ -61,6 +61,15 @@
 | [API 规格](architecture/api_spec.json) | FastAPI OpenAPI 规格产物 |
 | [贡献指南](CONTRIBUTING.md) | Issue、PR、测试、文档同步和协作要求 |
 
+## 架构与技术
+
+| 文档 | 内容 |
+| --- | --- |
+| [系统架构总览](architecture/ARCHITECTURE.md) | 组件边界、数据流、目录结构、核心设计决策 |
+| [数据源系统](architecture/data-provider.md) | Fetcher 能力矩阵、fallback 机制、如何添加新数据源 |
+| [Agent 流水线](architecture/agent-pipeline.md) | 多 Agent 架构、运行模式、各阶段职责、工具系统 |
+| [优化路线图](OPTIMIZATION.md) | 已识别技术债的优先级、根因分析和修复方案 |
+
 ## 多语言
 
 | 文档 | 内容 |

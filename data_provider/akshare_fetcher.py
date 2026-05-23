@@ -27,6 +27,7 @@ import logging
 import os
 import random
 import time
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
@@ -1443,18 +1444,210 @@ class AkshareFetcher(BaseFetcher):
             circuit_breaker.record_failure(sina_key, str(e))
             return None
     
+    # ------------------------------------------------------------------
+    # 本地筹码分布计算（纯Python，复刻 AKShare CYQCalculator 算法）
+    # 数据源无关 — 只需 K 线日数据（open/close/high/low + 换手率）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _compute_chip_from_kline(
+        records: list,
+        lookback: int = 120,
+        factor: int = 150,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        从K线数据本地计算筹码分布。
+
+        算法复刻自 AKShare stock_cyq_em 中的 JS CYQCalculator:
+        1. 构建 factor 等宽价格直方图 (minprice..maxprice)
+        2. 逐日衰减旧筹码 (× (1-换手率))，再按三角分布叠加当日筹码
+        3. 累计后计算获利比例 / 平均成本 / 90%&70%集中度
+
+        Args:
+            records: 按日期升序排列的 dict 列表，每项至少含:
+                     date, open, close, high, low, 以及 hsl 或 turnover
+            lookback: 回看交易日天数
+            factor: 价格直方图桶数 (AKShare 默认 150)
+
+        Returns:
+            dict 或 None（记录不足时）
+        """
+        if not records or len(records) < 5:
+            return None
+
+        recs = records[-lookback - 1:] if len(records) > lookback else list(records)
+        maxprice = max(r["high"] for r in recs)
+        minprice = min(r["low"] for r in recs)
+        if maxprice <= minprice:
+            return None
+
+        accuracy = max(0.01, (maxprice - minprice) / (factor - 1))
+        xdata = [0.0] * factor  # 筹码直方图
+
+        for rec in recs:
+            op = float(rec["open"])
+            cl = float(rec["close"])
+            hi = float(rec["high"])
+            lo = float(rec["low"])
+            avg = (op + cl + hi + lo) / 4.0
+
+            # 换手率：优先 hsl(%) 字段，其次 turnover(小数)
+            hsl_raw = rec.get("hsl", rec.get("turnover", 0.0))
+            hsl_raw = float(hsl_raw) if hsl_raw else 0.0
+            t_rate = min(1.0, hsl_raw / 100.0 if hsl_raw > 1.0 else hsl_raw)
+
+            # 衰减
+            if t_rate > 0:
+                for n in range(factor):
+                    xdata[n] *= (1.0 - t_rate)
+
+            if abs(hi - lo) < 1e-8:
+                # 一字板：矩形近似
+                idx = max(0, min(factor - 1, int((avg - minprice) / accuracy)))
+                xdata[idx] += t_rate / 2.0
+                continue
+
+            G = 2.0 / (hi - lo)
+            H = max(0, min(factor - 1, int((hi - minprice) / accuracy)))
+            L = max(0, min(factor - 1, math.ceil((lo - minprice) / accuracy)))
+
+            for j in range(L, H + 1):
+                curprice = minprice + accuracy * j
+                if curprice <= avg:
+                    denom = avg - lo
+                    if abs(denom) < 1e-8:
+                        xdata[j] += G * t_rate
+                    else:
+                        xdata[j] += (curprice - lo) / denom * G * t_rate
+                else:
+                    denom = hi - avg
+                    if abs(denom) < 1e-8:
+                        xdata[j] += G * t_rate
+                    else:
+                        xdata[j] += (hi - curprice) / denom * G * t_rate
+
+        total_chips = sum(xdata)
+        if total_chips < 1e-12:
+            return None
+
+        current_price = float(recs[-1]["close"])
+
+        # 获利比例
+        below = 0.0
+        for i in range(factor):
+            price = minprice + accuracy * i
+            if current_price >= price:
+                below += xdata[i]
+        benefit_part = below / total_chips
+
+        # 平均成本（筹码中位数价格）
+        def _cost_at_chip(target: float) -> float:
+            s = 0.0
+            for i in range(factor):
+                if s + xdata[i] > target:
+                    return minprice + accuracy * i
+                s += xdata[i]
+            return maxprice
+
+        avg_cost = _cost_at_chip(total_chips * 0.5)
+
+        # 集中度：percent% 筹码的成本区间 + 集中度 = (高-低)/(高+低)
+        def _percent_chips(pct: float) -> Dict[str, float]:
+            if pct <= 0 or pct >= 1:
+                return {"low": 0.0, "high": 0.0, "concentration": 0.0}
+            lo_cost = _cost_at_chip(total_chips * (1 - pct) / 2)
+            hi_cost = _cost_at_chip(total_chips * (1 + pct) / 2)
+            conc = 0.0 if (lo_cost + hi_cost) == 0 else (hi_cost - lo_cost) / (lo_cost + hi_cost)
+            return {"low": lo_cost, "high": hi_cost, "concentration": conc}
+
+        c90 = _percent_chips(0.90)
+        c70 = _percent_chips(0.70)
+
+        return {
+            "date": str(recs[-1].get("date", "")),
+            "profit_ratio": min(1.0, max(0.0, benefit_part)),
+            "avg_cost": avg_cost,
+            "cost_90_low": c90["low"],
+            "cost_90_high": c90["high"],
+            "concentration_90": c90["concentration"],
+            "cost_70_low": c70["low"],
+            "cost_70_high": c70["high"],
+            "concentration_70": c70["concentration"],
+        }
+
+    def _fetch_kline_for_chip(self, stock_code: str, days: int = 250
+                              ) -> Optional[List[Dict[str, Any]]]:
+        """获取历史K线用于本地筹码计算，优先新浪 → 腾讯。"""
+        import akshare as ak
+        from datetime import datetime, timedelta
+
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+
+        # Normalize code for akshare sina format
+        prefix = "sh" if stock_code.startswith(("6", "9")) else "sz"
+        sina_symbol = f"{prefix}{stock_code}"
+
+        # 1) 新浪
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            df = ak.stock_zh_a_daily(
+                symbol=sina_symbol, start_date=start, end_date=end, adjust="qfq"
+            )
+            if df is not None and not df.empty and "turnover" in df.columns:
+                logger.info(
+                    f"[筹码K线] 新浪返回 {len(df)} 天数据 (symbol={sina_symbol})"
+                )
+                recs = df.sort_values("date").to_dict(orient="records")
+                # Sina returns 'turnover' as decimal; rename to hsl for compatibility
+                for r in recs:
+                    r["hsl"] = r.get("turnover", 0.0)
+                return recs
+        except Exception:
+            logger.debug(f"[筹码K线] 新浪K线失败，尝试腾讯", exc_info=True)
+
+        # 2) 腾讯
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            df = ak.stock_zh_a_hist_tx(
+                symbol=stock_code, start_date=start, end_date=end, adjust="qfq"
+            )
+            if df is not None and not df.empty:
+                logger.info(f"[筹码K线] 腾讯返回 {len(df)} 天数据")
+                # Tencent column mapping — varies by akshare version
+                col_map = {
+                    "日期": "date", "开盘": "open", "收盘": "close",
+                    "最高": "high", "最低": "low", "成交量": "volume",
+                    "成交额": "amount", "换手率": "hsl",
+                }
+                # Also try English column names
+                if "date" not in df.columns and "日期" in df.columns:
+                    df = df.rename(columns=col_map)
+                for col in ["open", "close", "high", "low", "hsl"]:
+                    if col not in df.columns:
+                        logger.warning(f"[筹码K线] 腾讯数据缺列: {col}")
+                        break
+                else:
+                    return df.sort_values("date").to_dict(orient="records")
+        except Exception:
+            logger.debug(f"[筹码K线] 腾讯K线失败", exc_info=True)
+
+        return None
+
     def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
         """
-        获取筹码分布数据
-        
-        数据来源：ak.stock_cyq_em()
-        包含：获利比例、平均成本、筹码集中度
-        
+        获取筹码分布数据（多数据源降级）
+
+        优先级:
+        1. ak.stock_cyq_em() — 东方财富 (可能被封)
+        2. 本地计算 — 新浪/腾讯K线 → Python CYQCalculator
+
         注意：ETF/指数没有筹码分布数据，会直接返回 None
-        
+
         Args:
             stock_code: 股票代码
-            
+
         Returns:
             ChipDistribution 对象（最新一天的数据），获取失败返回 None
         """
@@ -1465,7 +1658,7 @@ class AkshareFetcher(BaseFetcher):
             logger.debug(f"[API跳过] {stock_code} 是美股，无筹码分布数据")
             return None
 
-        # 港股没有筹码分布数据（stock_cyq_em 是 A 股专属接口）
+        # 港股没有筹码分布数据
         if _is_hk_code(stock_code):
             logger.debug(f"[API跳过] {stock_code} 是港股，无筹码分布数据")
             return None
@@ -1474,51 +1667,87 @@ class AkshareFetcher(BaseFetcher):
         if _is_etf_code(stock_code):
             logger.debug(f"[API跳过] {stock_code} 是 ETF/指数，无筹码分布数据")
             return None
-        
+
+        # === 策略1: stock_cyq_em (东方财富) ===
         try:
-            # 防封禁策略
             self._set_random_user_agent()
             self._enforce_rate_limit()
-            
+
             logger.info(f"[API调用] ak.stock_cyq_em(symbol={stock_code}) 获取筹码分布...")
             import time as _time
             api_start = _time.time()
-            
+
             df = ak.stock_cyq_em(symbol=stock_code)
-            
+
             api_elapsed = _time.time() - api_start
-            
-            if df.empty:
+
+            if not df.empty:
+                logger.info(
+                    f"[API返回] ak.stock_cyq_em 成功: {len(df)}天, 耗时 {api_elapsed:.2f}s"
+                )
+                latest = df.iloc[-1]
+                chip = ChipDistribution(
+                    code=stock_code,
+                    date=str(latest.get("日期", "")),
+                    source="akshare",
+                    profit_ratio=safe_float(latest.get("获利比例")),
+                    avg_cost=safe_float(latest.get("平均成本")),
+                    cost_90_low=safe_float(latest.get("90成本-低")),
+                    cost_90_high=safe_float(latest.get("90成本-高")),
+                    concentration_90=safe_float(latest.get("90集中度")),
+                    cost_70_low=safe_float(latest.get("70成本-低")),
+                    cost_70_high=safe_float(latest.get("70成本-高")),
+                    concentration_70=safe_float(latest.get("70集中度")),
+                )
+                logger.info(
+                    f"[筹码分布] {stock_code} 日期={chip.date}: "
+                    f"获利比例={chip.profit_ratio:.1%}, 平均成本={chip.avg_cost}, "
+                    f"90%集中度={chip.concentration_90:.2%}"
+                )
+                return chip
+            else:
                 logger.warning(f"[API返回] ak.stock_cyq_em 返回空数据, 耗时 {api_elapsed:.2f}s")
+
+        except Exception as e:
+            logger.warning(f"[筹码分布] stock_cyq_em 失败: {e}，尝试本地计算fallback")
+
+        # === 策略2: 本地计算 (新浪/腾讯K线) ===
+        try:
+            kline = self._fetch_kline_for_chip(stock_code, days=250)
+            if kline is None:
+                logger.warning(f"[筹码分布] 无法获取 {stock_code} 的K线数据用于本地计算")
                 return None
-            
-            logger.info(f"[API返回] ak.stock_cyq_em 成功: 返回 {len(df)} 天数据, 耗时 {api_elapsed:.2f}s")
-            logger.debug(f"[API返回] 筹码数据列名: {list(df.columns)}")
-            
-            # 取最新一天的数据
-            latest = df.iloc[-1]
-            
-            # 使用 realtime_types.py 中的统一转换函数
+
+            result = self._compute_chip_from_kline(kline, lookback=120)
+            if result is None:
+                logger.warning(f"[筹码分布] 本地计算 {stock_code} 失败（数据不足）")
+                return None
+
+            logger.warning(
+                f"[筹码-fallback] {stock_code}: 使用本地 CYQ 近似，精度可能低于 API 数据"
+            )
             chip = ChipDistribution(
                 code=stock_code,
-                date=str(latest.get('日期', '')),
-                profit_ratio=safe_float(latest.get('获利比例')),
-                avg_cost=safe_float(latest.get('平均成本')),
-                cost_90_low=safe_float(latest.get('90成本-低')),
-                cost_90_high=safe_float(latest.get('90成本-高')),
-                concentration_90=safe_float(latest.get('90集中度')),
-                cost_70_low=safe_float(latest.get('70成本-低')),
-                cost_70_high=safe_float(latest.get('70成本-高')),
-                concentration_70=safe_float(latest.get('70集中度')),
+                date=result["date"],
+                source="local",
+                profit_ratio=round(result["profit_ratio"], 8),
+                avg_cost=round(result["avg_cost"], 2),
+                cost_90_low=round(result["cost_90_low"], 2),
+                cost_90_high=round(result["cost_90_high"], 2),
+                concentration_90=round(result["concentration_90"], 8),
+                cost_70_low=round(result["cost_70_low"], 2),
+                cost_70_high=round(result["cost_70_high"], 2),
+                concentration_70=round(result["concentration_70"], 8),
             )
-            
-            logger.info(f"[筹码分布] {stock_code} 日期={chip.date}: 获利比例={chip.profit_ratio:.1%}, "
-                       f"平均成本={chip.avg_cost}, 90%集中度={chip.concentration_90:.2%}, "
-                       f"70%集中度={chip.concentration_70:.2%}")
+            logger.info(
+                f"[筹码分布-local] {stock_code} 日期={chip.date}: "
+                f"获利比例={chip.profit_ratio:.1%}, 平均成本={chip.avg_cost}, "
+                f"90%集中度={chip.concentration_90:.2%}"
+            )
             return chip
-            
+
         except Exception as e:
-            logger.error(f"[API错误] 获取 {stock_code} 筹码分布失败: {e}")
+            logger.error(f"[筹码分布] 本地计算 {stock_code} 失败: {e}", exc_info=True)
             return None
     
     def get_enhanced_data(self, stock_code: str, days: int = 60) -> Dict[str, Any]:

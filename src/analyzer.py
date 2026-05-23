@@ -2818,8 +2818,9 @@ class GeminiAnalyzer:
         if 'chip' in context:
             chip = context['chip']
             profit_ratio = chip.get('profit_ratio', 0)
+            _chip_section = "### 筹码数据（估算，效率指标）" if chip.get('source') == 'local' else "### 筹码分布数据（效率指标）"
             prompt += f"""
-### 筹码分布数据（效率指标）
+{_chip_section}
 | 指标 | 数值 | 健康标准 |
 |------|------|----------|
 | **获利比例** | **{profit_ratio:.1%}** | 70-90%时警惕 |

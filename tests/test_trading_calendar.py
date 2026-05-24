@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Regression tests for effective trading date resolution."""
 
+import json
 from datetime import date, datetime, time, timezone
 from types import SimpleNamespace
 from typing import Optional
@@ -467,6 +468,191 @@ class InferMarketPhaseTestCase(unittest.TestCase):
         result = self._infer_with_calendar("cn", current_time, fake_calendar)
 
         self.assertEqual(result, trading_calendar.MarketPhase.INTRADAY)
+
+
+class MarketPhaseContextTestCase(unittest.TestCase):
+    """Tests for the Issue #1386 P1a runtime market phase context."""
+
+    def _build_with_calendar(
+        self,
+        market: str,
+        current_time: datetime,
+        fake_calendar: _FakeCalendar,
+    ) -> trading_calendar.MarketPhaseContext:
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            _calendar_namespace(fake_calendar),
+            create=True,
+        ):
+            return trading_calendar.build_market_phase_context(
+                market=market,
+                current_time=current_time,
+                trigger_source="web",
+                analysis_intent="auto",
+            )
+
+    def test_context_to_dict_is_json_safe_for_intraday(self):
+        fake_calendar = _FakeCalendar(
+            sessions=[date(2026, 3, 26), date(2026, 3, 27)],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+            open_time=time(9, 30),
+            break_start=time(11, 30),
+            break_end=time(13, 0),
+        )
+        ctx = self._build_with_calendar(
+            "cn",
+            datetime(2026, 3, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            fake_calendar,
+        )
+
+        payload = ctx.to_dict()
+        encoded = json.loads(json.dumps(payload, ensure_ascii=False))
+
+        self.assertEqual(encoded["market"], "cn")
+        self.assertEqual(encoded["phase"], "intraday")
+        self.assertEqual(encoded["market_local_time"], "2026-03-27T10:00:00+08:00")
+        self.assertEqual(encoded["session_date"], "2026-03-27")
+        self.assertEqual(encoded["effective_daily_bar_date"], "2026-03-26")
+        self.assertEqual(encoded["is_trading_day"], True)
+        self.assertEqual(encoded["is_market_open_now"], True)
+        self.assertEqual(encoded["is_partial_bar"], True)
+        self.assertIsNone(encoded["minutes_to_open"])
+        self.assertEqual(encoded["minutes_to_close"], 300)
+        self.assertEqual(encoded["trigger_source"], "web")
+        self.assertEqual(encoded["analysis_intent"], "auto")
+        self.assertEqual(encoded["warnings"], [])
+
+    def test_context_derived_flags_for_regular_session_phases(self):
+        fake_calendar = _FakeCalendar(
+            sessions=[date(2026, 3, 26), date(2026, 3, 27)],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+            open_time=time(9, 30),
+            break_start=time(11, 30),
+            break_end=time(13, 0),
+        )
+        cases = (
+            (
+                datetime(2026, 3, 27, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+                "premarket",
+                True,
+                False,
+                False,
+                30,
+                None,
+                date(2026, 3, 26),
+            ),
+            (
+                datetime(2026, 3, 27, 11, 45, tzinfo=ZoneInfo("Asia/Shanghai")),
+                "lunch_break",
+                True,
+                False,
+                True,
+                None,
+                195,
+                date(2026, 3, 26),
+            ),
+            (
+                datetime(2026, 3, 27, 14, 58, tzinfo=ZoneInfo("Asia/Shanghai")),
+                "closing_auction",
+                True,
+                True,
+                True,
+                None,
+                2,
+                date(2026, 3, 26),
+            ),
+            (
+                datetime(2026, 3, 27, 15, 1, tzinfo=ZoneInfo("Asia/Shanghai")),
+                "postmarket",
+                True,
+                False,
+                False,
+                None,
+                None,
+                date(2026, 3, 27),
+            ),
+            (
+                datetime(2026, 3, 28, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+                "non_trading",
+                False,
+                False,
+                False,
+                None,
+                None,
+                date(2026, 3, 27),
+            ),
+        )
+
+        for (
+            current_time,
+            phase,
+            is_trading_day,
+            is_market_open_now,
+            is_partial_bar,
+            minutes_to_open,
+            minutes_to_close,
+            effective_date,
+        ) in cases:
+            with self.subTest(phase=phase):
+                ctx = self._build_with_calendar("cn", current_time, fake_calendar)
+                payload = ctx.to_dict()
+                self.assertEqual(payload["phase"], phase)
+                self.assertEqual(payload["is_trading_day"], is_trading_day)
+                self.assertEqual(payload["is_market_open_now"], is_market_open_now)
+                self.assertEqual(payload["is_partial_bar"], is_partial_bar)
+                self.assertEqual(payload["minutes_to_open"], minutes_to_open)
+                self.assertEqual(payload["minutes_to_close"], minutes_to_close)
+                self.assertEqual(
+                    payload["effective_daily_bar_date"],
+                    effective_date.isoformat(),
+                )
+
+    def test_unknown_market_uses_null_tristate_flags_and_warning_code(self):
+        ctx = trading_calendar.build_market_phase_context(
+            market=None,
+            current_time=datetime(2026, 3, 27, 10, 0),
+        )
+        payload = json.loads(json.dumps(ctx.to_dict()))
+
+        self.assertEqual(payload["phase"], "unknown")
+        self.assertIn("unknown_market", payload["warnings"])
+        self.assertIsNone(payload["is_trading_day"])
+        self.assertIsNone(payload["is_market_open_now"])
+        self.assertIsNone(payload["is_partial_bar"])
+        self.assertIsNone(payload["minutes_to_open"])
+        self.assertIsNone(payload["minutes_to_close"])
+
+    def test_calendar_unavailable_warning_code(self):
+        current_time = datetime(2026, 3, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", False):
+            ctx = trading_calendar.build_market_phase_context(
+                market="cn",
+                current_time=current_time,
+            )
+
+        self.assertEqual(ctx.phase, trading_calendar.MarketPhase.UNKNOWN)
+        self.assertIn("calendar_unavailable", ctx.warnings)
+
+    def test_calendar_error_warning_code(self):
+        current_time = datetime(2026, 3, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            SimpleNamespace(get_calendar=lambda _ex: (_ for _ in ()).throw(RuntimeError("boom"))),
+            create=True,
+        ):
+            ctx = trading_calendar.build_market_phase_context(
+                market="cn",
+                current_time=current_time,
+            )
+
+        self.assertEqual(ctx.phase, trading_calendar.MarketPhase.UNKNOWN)
+        self.assertIn("calendar_error", ctx.warnings)
 
 
 class ComputeEffectiveRegionTestCase(unittest.TestCase):

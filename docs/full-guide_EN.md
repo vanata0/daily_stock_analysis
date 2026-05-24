@@ -621,6 +621,12 @@ Known problem baseline:
 
 P0 does not connect this baseline to pipeline / Agent / API / Web / Bot, does not change report schemas, does not change alert technical-indicator partial-bar handling, and does not add configuration keys.
 
+### Runtime Market Phase Context (Issue #1386 P1a)
+
+P1a constructs and passes an internal `market_phase_context` through the regular stock-analysis pipeline, the legacy Agent context, and multi-agent `ctx.meta`. The context includes market, phase, market-local date, effective daily-bar date, trading-day / market-open / partial-bar tristate flags, best-effort open/close minute estimates, and degradation warning codes such as `unknown_market`, `calendar_unavailable`, and `calendar_error`.
+
+P1a still does not change prompt wording, API/Web/Bot parameters, report schemas, stable history/task-status metadata, or quote freshness/data quality semantics. Regular history snapshots and Agent history snapshots strip this runtime-only field. P1b is left to define persistent metadata and task-status display contracts.
+
 ---
 
 ## Notification Channel Configuration

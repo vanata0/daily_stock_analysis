@@ -1048,6 +1048,36 @@ class DataFetcherManager:
         else:
             logger.debug("[数据源初始化] 跳过未配置的 AlphaVantageFetcher")
 
+        tickflow_api_key = (getattr(config, "tickflow_api_key", None) or "").strip()
+        if tickflow_api_key:
+            from .tickflow_fetcher import TickFlowFetcher
+            optional_fetchers.append(TickFlowFetcher(api_key=tickflow_api_key))
+            logger.info("[数据源初始化] TickFlowFetcher 已启用 (日线 K 线 P%d)", TickFlowFetcher.priority)
+        else:
+            logger.debug("[数据源初始化] 跳过未配置的 TickFlowFetcher (TICKFLOW_API_KEY 未设置)")
+
+        # StockNewAPIFetcher — stock_new 本地 HTTP API（最高优先级，自动探测）
+        from .stock_new_api_fetcher import StockNewAPIFetcher
+        _sna = StockNewAPIFetcher()
+        if _sna.is_available:
+            optional_fetchers.append(_sna)
+            logger.info(
+                "[数据源初始化] StockNewAPIFetcher 已启用 (P%d, url=%s)",
+                _sna.priority, _sna._base_url,
+            )
+        else:
+            # Fallback: 直接读 DuckDB（stock_new 未运行时可用）
+            from .screener_db_fetcher import ScreenerDBFetcher
+            _screener = ScreenerDBFetcher()
+            if _screener.is_available:
+                optional_fetchers.append(_screener)
+                logger.info(
+                    "[数据源初始化] ScreenerDBFetcher 已启用 (P%d, path=%s)",
+                    _screener.priority, _screener._db_path,
+                )
+            else:
+                logger.debug("[数据源初始化] 本地高速 K 线源不可用（stock_new API 和 DuckDB 均不可达）")
+
         # 初始化数据源列表
         self._ensure_concurrency_guards()
         with self._fetchers_lock:

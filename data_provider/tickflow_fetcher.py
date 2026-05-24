@@ -1,21 +1,28 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-TickFlowFetcher - market review only
+TickFlowFetcher
 ===================================
 
-Issue #632 only requires TickFlow for A-share market review stability.
-This fetcher intentionally implements a narrow P0 surface:
+Supports two usage modes:
 
-1. Main A-share indices quotes
-2. A-share market breadth statistics
+1. **Per-stock daily K-line** (participates in the standard DataFetcherManager
+   pipeline).  Uses ``client.klines.get(symbol, period="1d", adjust="forward")``.
+   Active when TICKFLOW_API_KEY is set; priority controlled by
+   TICKFLOW_KLINE_PRIORITY (default 0, set 99 to disable).
 
-It does not participate in the general daily-data or per-stock realtime
-pipelines and should only be called explicitly by DataFetcherManager.
+2. **A-share market review** (called explicitly by DataFetcherManager).
+   Uses ``client.quotes.get(symbols=...)`` for indices and optionally
+   ``client.quotes.get(universes=["CN_Equity_A"])`` for market breadth.
+
+Symbol format used by the TickFlow API: ``<6-digit-code>.<EXCHANGE>``
+  e.g. 600519 → 600519.SH, 300766 → 300766.SZ, 920748 → 920748.BJ
 """
 
 import logging
 import math
+import os
+from datetime import datetime, timezone
 from threading import RLock
 from time import monotonic
 from typing import Any, Dict, List, Optional
@@ -25,6 +32,7 @@ import pandas as pd
 from .base import (
     BaseFetcher,
     DataFetchError,
+    STANDARD_COLUMNS,
     is_bse_code,
     is_kc_cy_stock,
     is_st_stock,
@@ -46,13 +54,47 @@ _MAX_SYMBOLS_PER_QUOTE_REQUEST = 5
 _UNIVERSE_PERMISSION_NEGATIVE_CACHE_TTL_SECONDS = 900
 
 
+def _to_tickflow_symbol(stock_code: str) -> str:
+    """Convert a normalized 6-digit A-share code to TickFlow symbol format.
+
+    Rules (standard A-share exchange routing):
+      92xxxx, 43xxxx, 81xxxx, 82xxxx, 83xxxx, 87xxxx, 88xxxx → .BJ (Beijing)
+      6xxxxx, 900xxx (Shanghai B-share), 51xxxx, 52xxxx,
+        56xxxx, 58xxxx                                        → .SH (Shanghai)
+      everything else (0, 1, 2, 3, 15xxxx, 16xxxx, ...)      → .SZ (Shenzhen)
+    """
+    code = normalize_stock_code(stock_code)
+    if not code or not code.isdigit() or len(code) != 6:
+        raise DataFetchError(f"TickFlowFetcher: unsupported code format '{stock_code}'")
+    if is_bse_code(code):
+        suffix = "BJ"
+    elif code[0] in ("5", "6", "7", "9"):
+        # 5xxxxx: Shanghai ETFs (51/52/56/58xxxx)
+        # 6xxxxx: Shanghai Main Board
+        # 7xxxxx: Shanghai convertible bonds & rights issues
+        # 9xxxxx: Shanghai B-shares (900xxx) and other SH instruments
+        suffix = "SH"
+    else:
+        suffix = "SZ"
+    return f"{code}.{suffix}"
+
+
+def _date_to_ms(date_str: str) -> int:
+    """Convert 'YYYY-MM-DD' to millisecond UTC timestamp (start of day)."""
+    dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
 class TickFlowFetcher(BaseFetcher):
-    """TickFlow-backed market review helper."""
+    """TickFlow data source — daily K-line + market review."""
 
     name = "TickFlowFetcher"
-    priority = 99
+    priority = int(os.getenv("TICKFLOW_KLINE_PRIORITY", "0"))
 
-    def __init__(self, api_key: Optional[str], timeout: float = 30.0):
+    def __init__(self, api_key: Optional[str] = None, timeout: float = 30.0):
+        if api_key is None:
+            api_key = os.getenv("TICKFLOW_API_KEY", "")
+        self.priority = int(os.getenv("TICKFLOW_KLINE_PRIORITY", "0"))
         self.api_key = (api_key or "").strip()
         self.timeout = timeout
         self._client = None
@@ -99,14 +141,80 @@ class TickFlowFetcher(BaseFetcher):
     def _fetch_raw_data(
         self, stock_code: str, start_date: str, end_date: str
     ) -> pd.DataFrame:
-        raise DataFetchError(
-            "TickFlowFetcher P0 only supports market review endpoints"
+        """Fetch daily OHLCV data via TickFlow klines API (forward-adjusted)."""
+        client = self._get_client()
+        if client is None:
+            raise DataFetchError("TickFlowFetcher: no API key configured")
+
+        try:
+            symbol = _to_tickflow_symbol(stock_code)
+        except DataFetchError:
+            raise DataFetchError(
+                f"TickFlowFetcher: cannot map '{stock_code}' to TickFlow symbol"
+            )
+
+        start_ms = _date_to_ms(start_date)
+        # end_date is inclusive — add one day in ms so the last trading day
+        # is included when the API uses exclusive upper bound.
+        end_ms = _date_to_ms(end_date) + 86_400_000
+
+        import time as _time
+        t0 = _time.time()
+        logger.info(
+            "[TickFlowFetcher] 拉取日线 K 线: %s (%s ~ %s)",
+            symbol, start_date, end_date,
         )
+        try:
+            df: pd.DataFrame = client.klines.get(
+                symbol,
+                period="1d",
+                start_time=start_ms,
+                end_time=end_ms,
+                adjust="forward",
+                as_dataframe=True,
+            )
+        except Exception as exc:
+            elapsed = _time.time() - t0
+            raise DataFetchError(
+                f"TickFlowFetcher klines.get({symbol}) 失败 ({elapsed:.2f}s): {exc}"
+            ) from exc
+
+        elapsed = _time.time() - t0
+        if df is None or df.empty:
+            raise DataFetchError(
+                f"TickFlowFetcher klines.get({symbol}) 返回空数据 ({elapsed:.2f}s)"
+            )
+
+        logger.info(
+            "[TickFlowFetcher] 拉取完成: %s, %d 行, %.2fs",
+            symbol, len(df), elapsed,
+        )
+        return df
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
-        raise DataFetchError(
-            "TickFlowFetcher P0 only supports market review endpoints"
-        )
+        """Map TickFlow klines DataFrame columns to the project's standard schema.
+
+        TickFlow returns a flat DataFrame with a RangeIndex and columns:
+        symbol, name, timestamp (ms), trade_date (YYYY-MM-DD), trade_time,
+        open, high, low, close, volume, amount.
+        """
+        df = df.copy()
+
+        # Use trade_date as the 'date' column (already 'YYYY-MM-DD' strings)
+        if "trade_date" in df.columns:
+            df = df.rename(columns={"trade_date": "date"})
+        elif "timestamp" in df.columns:
+            # Fallback: derive date from millisecond timestamp (UTC)
+            df["date"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+            df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+
+        # Add stock code
+        df["code"] = normalize_stock_code(stock_code)
+
+        # Keep only the standard columns that exist
+        keep_cols = ["code"] + STANDARD_COLUMNS
+        existing_cols = [c for c in keep_cols if c in df.columns]
+        return df[existing_cols]
 
     @staticmethod
     def _safe_float(value: Any) -> Optional[float]:

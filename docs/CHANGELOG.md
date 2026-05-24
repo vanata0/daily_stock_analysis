@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - improve: Refine LiteLLM parameter recovery, yfinance currency/dividend handling, RSI calculation, market-review presentation, stock-news relevance ranking, and report table rendering.
 - fix: Harden desktop packaging/update assets, completed analysis-status responses, AlphaVantage pct_chg routing, portfolio realtime snapshots, alert trigger dedupe, DatabaseManager cold start, and fallback pricing registration.
 - docs/tests: Add beginner setup and settings-help docs, document compatibility/rollback boundaries, and extend regression coverage for API, alert, packaging, and release paths.
+- [改进] pipeline: 将 `_single_stock_notify_lock` 从 `threading.Lock` 升级为 `threading.BoundedSemaphore(3)`，单股通知最多 3 路并发，超额时非阻塞跳过并记录 WARNING，消除长尾串行等待。
+- [测试] 新增 test_notification_semaphore.py，覆盖并发槽数上限、超额 WARNING 日志、send 跳过、finally 释放与 fallback __new__ 初始化路径。
 - [改进] config_registry: `build_schema_response` 加 `@functools.cache`，进程内只构建一次 schema，重复请求零开销。
 - [改进] name_to_code_resolver: `resolve_name_to_code` 结果加 TTL 缓存（1 小时），AkShare/模糊匹配同一名称只计算一次。
 - [改进] history_service: `HistoryService.get_history_list` 结果加 TTL 缓存（5 分钟），高频翻页不重复查 DB。

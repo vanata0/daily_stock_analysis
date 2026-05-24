@@ -29,6 +29,7 @@ import inspect
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
@@ -442,6 +443,65 @@ class AgentOrchestrator:
                     parse_dashboard=parse_dashboard,
                 )
 
+            # ── Parallel TechnicalAgent + IntelAgent (standard mode only) ──
+            # In standard mode the first two stages are always TechnicalAgent
+            # and IntelAgent.  They are independent (write to disjoint
+            # ctx.data keys) so we can run them concurrently to cut wall-clock
+            # time by ~50 % on the longest of the two LLM calls.
+            if (
+                self.mode == "standard"
+                and index == 0
+                and len(agents) >= 2
+                and getattr(agents[0], "agent_name", None) == "technical"
+                and getattr(agents[1], "agent_name", None) == "intel"
+            ):
+                _par_timeout_s = (
+                    max(0.0, timeout_s - (time.time() - t0))
+                    if timeout_s
+                    else None
+                )
+                parallel_results = self._run_parallel_stages(
+                    [agents[0], agents[1]],
+                    ctx,
+                    timeout_seconds=_par_timeout_s,
+                )
+                for par_agent, par_result in zip(agents[:2], parallel_results):
+                    stats.record_stage(par_result)
+                    all_tool_calls.extend(
+                        tc for tc in (par_result.meta.get("tool_calls_log") or [])
+                    )
+                    models_used.extend(par_result.meta.get("models_used", []))
+                    if progress_callback:
+                        progress_callback({
+                            "type": "stage_done",
+                            "stage": par_agent.agent_name,
+                            "status": par_result.status.value,
+                            "duration": par_result.duration_s,
+                        })
+                    if par_result.status == StageStatus.FAILED:
+                        if par_agent.agent_name == "intel":
+                            # intel is non-critical — degrade gracefully
+                            logger.warning(
+                                "[Orchestrator] non-critical parallel stage '%s' failed: %s",
+                                par_agent.agent_name,
+                                par_result.error,
+                            )
+                        else:
+                            logger.error(
+                                "[Orchestrator] critical parallel stage '%s' failed: %s",
+                                par_agent.agent_name,
+                                par_result.error,
+                            )
+                            return OrchestratorResult(
+                                success=False,
+                                error=f"Stage '{par_agent.agent_name}' failed: {par_result.error}",
+                                stats=stats,
+                                total_tokens=stats.total_tokens,
+                                tool_calls_log=all_tool_calls,
+                            )
+                index = 2  # advance past both parallel agents
+                continue
+
             if (
                 self.mode == "specialist"
                 and agent.agent_name == "decision"
@@ -576,6 +636,73 @@ class AgentOrchestrator:
             model=model_str,
             stats=stats,
         )
+
+    # -----------------------------------------------------------------
+    # Parallel stage runner
+    # -----------------------------------------------------------------
+
+    def _run_parallel_stages(
+        self,
+        agents: List[Any],
+        ctx: AgentContext,
+        timeout_seconds: Optional[float] = None,
+    ) -> List[StageResult]:
+        """Run a list of agents concurrently in a thread pool.
+
+        Each agent receives the same :class:`AgentContext`.  Agents in
+        the parallel group must write to *disjoint* ``ctx.data`` keys to
+        avoid data races.  TechnicalAgent (writes ``trend_result``,
+        ``technical_*`` keys) and IntelAgent (writes ``news_context``,
+        ``intel_*`` keys) satisfy this constraint.
+
+        ``progress_callback`` is intentionally **not** forwarded to
+        individual agents because the callback is typically not
+        thread-safe.  The caller emits ``stage_start`` / ``stage_done``
+        events after all parallel stages complete.
+
+        Args:
+            agents: Agents to run concurrently.
+            ctx: Shared context passed to every agent.
+            timeout_seconds: Per-stage budget forwarded to
+                ``_run_stage_agent``; applies to each agent independently.
+
+        Returns:
+            ``StageResult`` list in the same order as ``agents``.
+        """
+        results: List[Optional[StageResult]] = [None] * len(agents)
+
+        with ThreadPoolExecutor(
+            max_workers=len(agents),
+            thread_name_prefix="orch-parallel",
+        ) as pool:
+            future_to_index = {
+                pool.submit(
+                    self._run_stage_agent,
+                    agent,
+                    ctx,
+                    progress_callback=None,
+                    timeout_seconds=timeout_seconds,
+                ): i
+                for i, agent in enumerate(agents)
+            }
+            for future, idx in future_to_index.items():
+                agent_name = getattr(agents[idx], "agent_name", f"stage_{idx}")
+                try:
+                    results[idx] = future.result()
+                except Exception as exc:
+                    logger.error(
+                        "[Orchestrator] parallel stage '%s' raised: %s",
+                        agent_name,
+                        exc,
+                        exc_info=True,
+                    )
+                    results[idx] = StageResult(
+                        stage_name=agent_name,
+                        status=StageStatus.FAILED,
+                        error=str(exc),
+                    )
+
+        return results  # type: ignore[return-value]
 
     # -----------------------------------------------------------------
     # Agent chain construction

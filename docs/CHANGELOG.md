@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [改进] orchestrator: standard 模式下 TechnicalAgent 与 IntelAgent 改为并发执行（`ThreadPoolExecutor(2)`），两者写入 ctx.data 的 key 不重叠，理论节省 ~50% 壁钟时间。intel 失败仍降级处理；technical 失败仍中止流水线。
+- [测试] 新增 test_orchestrator_parallel.py，覆盖并发执行正确性（结果顺序、同时启动时间差、intel/technical 失败路径、quick/full 模式不触发并发分支）。
 - [改进] pipeline: 将 `_single_stock_notify_lock` 从 `threading.Lock` 升级为 `threading.BoundedSemaphore(3)`，单股通知最多 3 路并发，超额时非阻塞跳过并记录 WARNING，消除长尾串行等待。
 - [测试] 新增 test_notification_semaphore.py，覆盖并发槽数上限、超额 WARNING 日志、send 跳过、finally 释放与 fallback __new__ 初始化路径。
 - [改进] config_registry: `build_schema_response` 加 `@functools.cache`，进程内只构建一次 schema，重复请求零开销。

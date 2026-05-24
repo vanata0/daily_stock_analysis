@@ -638,6 +638,141 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(len(result.tool_calls_log), 1)
         self.assertEqual(result.total_steps, 1)
 
+    def test_guard_zero_tool_calls_retries_on_step1_no_tools(self):
+        """When guard_zero_tool_calls=True and step 1 returns no tool calls, runner
+        injects a reminder and retries; second call returns a tool call so the loop
+        continues normally."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+
+        echo_call = ToolCall(id="c1", name="echo", arguments={"message": "hi"})
+        responses = [
+            # Step 1 — no tool calls (guard fires #1)
+            LLMResponse(
+                content="Here is my analysis without tools.",
+                tool_calls=[],
+                usage={"total_tokens": 50},
+                provider="openai",
+            ),
+            # Step 2 — after reminder; makes a tool call
+            LLMResponse(
+                content="Let me fetch data first.",
+                tool_calls=[echo_call],
+                usage={"total_tokens": 60},
+                provider="openai",
+            ),
+            # Step 3 — final answer after tool result
+            LLMResponse(
+                content="Analysis complete.",
+                tool_calls=[],
+                usage={"total_tokens": 70},
+                provider="openai",
+            ),
+        ]
+        adapter.call_with_tools.side_effect = responses
+
+        result = run_agent_loop(
+            messages=[
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "Analyze 000505"},
+            ],
+            tool_registry=registry,
+            llm_adapter=adapter,
+            max_steps=5,
+            guard_zero_tool_calls=True,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.content, "Analysis complete.")
+        self.assertEqual(adapter.call_with_tools.call_count, 3)
+        # One tool call should be logged (the echo in step 2)
+        self.assertEqual(len(result.tool_calls_log), 1)
+        self.assertEqual(result.tool_calls_log[0]["tool"], "echo")
+
+    def test_guard_zero_tool_calls_disabled_by_default(self):
+        """Without guard_zero_tool_calls=True, no-tool step 1 response is accepted."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="Direct answer without tools.",
+            tool_calls=[],
+            usage={"total_tokens": 50},
+            provider="openai",
+        )
+
+        result = run_agent_loop(
+            messages=[
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "What is RSI?"},
+            ],
+            tool_registry=registry,
+            llm_adapter=adapter,
+            max_steps=5,
+            # guard_zero_tool_calls defaults to False
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.content, "Direct answer without tools.")
+        self.assertEqual(adapter.call_with_tools.call_count, 1)
+        self.assertEqual(result.total_steps, 1)
+
+    def test_guard_fires_twice_when_model_skips_tools_twice(self):
+        """Guard allows up to 2 retries; third no-tool response is accepted."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+
+        echo_call = ToolCall(id="c2", name="echo", arguments={"message": "hi"})
+        responses = [
+            # Step 1 — no tools (guard fires #1)
+            LLMResponse(content="Still hallucinating.", tool_calls=[], usage={"total_tokens": 40}, provider="openai"),
+            # Step 2 — still no tools (guard fires #2)
+            LLMResponse(content="Still hallucinating.", tool_calls=[], usage={"total_tokens": 40}, provider="openai"),
+            # Step 3 — after second reminder; makes a tool call
+            LLMResponse(content="Now calling tool.", tool_calls=[echo_call], usage={"total_tokens": 50}, provider="openai"),
+            # Step 4 — final answer
+            LLMResponse(content="Real analysis done.", tool_calls=[], usage={"total_tokens": 60}, provider="openai"),
+        ]
+        adapter.call_with_tools.side_effect = responses
+
+        result = run_agent_loop(
+            messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": "Analyze 000505"}],
+            tool_registry=registry,
+            llm_adapter=adapter,
+            max_steps=6,
+            guard_zero_tool_calls=True,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.content, "Real analysis done.")
+        self.assertEqual(adapter.call_with_tools.call_count, 4)
+        self.assertEqual(len(result.tool_calls_log), 1)
+
+    def test_guard_does_not_fire_for_error_provider(self):
+        """When provider='error', the guard must not retry — surface error immediately."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="No API key configured.",
+            tool_calls=[],
+            usage={"total_tokens": 1},
+            provider="error",
+            model="",
+        )
+
+        result = run_agent_loop(
+            messages=[
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "Analyze 000505"},
+            ],
+            tool_registry=registry,
+            llm_adapter=adapter,
+            max_steps=5,
+            guard_zero_tool_calls=True,
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(adapter.call_with_tools.call_count, 1)  # no retry
+
 
 # ============================================================
 # Dashboard parsing

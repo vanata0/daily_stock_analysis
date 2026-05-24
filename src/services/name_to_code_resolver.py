@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 _akshare_cache: Optional[tuple[float, Dict[str, str]]] = None
 _AKSHARE_CACHE_TTL = 1800  # 30 MIN
 
+# Individual resolution cache: name -> (expire_time, resolved_code_or_None)
+_resolve_cache: Dict[str, tuple[float, Optional[str]]] = {}
+_RESOLVE_CACHE_TTL = 3600  # 1 hour — AkShare bulk TTL is 30 min, so this is safe
+
 
 def _contains_cjk(text: str) -> bool:
     """Return True when text contains CJK characters."""
@@ -147,12 +151,30 @@ def resolve_name_to_code(name: str) -> Optional[str]:
     5. Fuzzy match (difflib).
     6. Return None.
 
+    Results are cached per-name for _RESOLVE_CACHE_TTL seconds to avoid
+    repeated AkShare / fuzzy-match work for the same name.
+
     Args:
         name: Stock name or code string.
 
     Returns:
         Resolved stock code, or None if ambiguous/failed.
     """
+    # --- TTL cache check ---
+    _now = time.time()
+    if name in _resolve_cache:
+        _exp, _val = _resolve_cache[name]
+        if _now < _exp:
+            return _val
+        del _resolve_cache[name]
+
+    result = _resolve_name_to_code_impl(name)
+    _resolve_cache[name] = (_now + _RESOLVE_CACHE_TTL, result)
+    return result
+
+
+def _resolve_name_to_code_impl(name: str) -> Optional[str]:
+    """Core resolution logic — called by resolve_name_to_code after cache miss."""
     if not name or not isinstance(name, str):
         return None
     s = name.strip()

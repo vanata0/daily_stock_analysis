@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - improve: Refine LiteLLM parameter recovery, yfinance currency/dividend handling, RSI calculation, market-review presentation, stock-news relevance ranking, and report table rendering.
 - fix: Harden desktop packaging/update assets, completed analysis-status responses, AlphaVantage pct_chg routing, portfolio realtime snapshots, alert trigger dedupe, DatabaseManager cold start, and fallback pricing registration.
 - docs/tests: Add beginner setup and settings-help docs, document compatibility/rollback boundaries, and extend regression coverage for API, alert, packaging, and release paths.
+- [改进] config_registry: `build_schema_response` 加 `@functools.cache`，进程内只构建一次 schema，重复请求零开销。
+- [改进] name_to_code_resolver: `resolve_name_to_code` 结果加 TTL 缓存（1 小时），AkShare/模糊匹配同一名称只计算一次。
+- [改进] history_service: `HistoryService.get_history_list` 结果加 TTL 缓存（5 分钟），高频翻页不重复查 DB。
+- [改进] config: 从 `_load_from_env` 抽出 `_load_llm_config()` 和 `_load_notification_config()` 两个独立子方法，减少单函数行数约 40%。
+- [测试] 新增 test_cache_layer.py，覆盖 schema 缓存命中数、resolver TTL 命中/过期/驱逐、history 缓存命中/过期，以及 config split 子方法返回 dict 的冒烟测试。
 - [改进] akshare_fetcher 筹码分布新增本地 CYQ 算法回退：当 stock_cyq_em API 失败或返回空时，自动用新浪/腾讯 K 线本地计算，source 标记为 "local"，分析报告中以"（估算）"注明精度差异。
 - [修复] akshare_fetcher 抽出 `import math` 到文件级，消除循环内重复 import；修复 `_percent_chips` 局部变量遮蔽外层同名变量。
 - [测试] 新增 test_akshare_chip_fallback.py，覆盖 CYQ 算法边界条件（空记录、数据不足、价格零区间、零成交量日、涨跌停一字板）及 API 失败 / 空响应时的 fallback 路径。

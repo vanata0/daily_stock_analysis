@@ -368,6 +368,7 @@ def run_agent_loop(
     thinking_labels: Optional[Dict[str, str]] = None,
     max_wall_clock_seconds: Optional[float] = None,
     tool_call_timeout_seconds: Optional[float] = None,
+    guard_zero_tool_calls: bool = False,
 ) -> RunLoopResult:
     """Execute the ReAct LLM ↔ tool loop.
 
@@ -385,6 +386,11 @@ def run_agent_loop(
         thinking_labels: Override map of tool_name → friendly label.
         max_wall_clock_seconds: Optional overall timeout budget for the loop.
         tool_call_timeout_seconds: Optional timeout for one parallel tool batch.
+        guard_zero_tool_calls: When True, if the model returns a final answer
+            on the very first step without calling any tools, inject a
+            rule-reminder and retry once.  Intended for chat_with_agent() where
+            the model MUST fetch real data before answering.  Default False so
+            callers that legitimately skip tools are unaffected.
 
     Returns:
         A :class:`RunLoopResult` with the final content, stats, and the
@@ -406,6 +412,11 @@ def run_agent_loop(
     # enforced from step 2 onwards so the first step always gets a chance
     # even when the total budget is small.
     _MIN_STEP_BUDGET_S = 8.0
+    # How many times the zero-tool-call guard has already fired this run.
+    # We allow up to 2 retries so the model has two chances to start using
+    # tools (once for the initial skip, once in case the conversation history
+    # is biased and the model needs a second nudge).
+    _guard_fire_count = 0
 
     for step in range(max_steps):
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
@@ -562,6 +573,41 @@ def run_agent_loop(
 
         else:
             # ---- final answer branch ----
+
+            # Guard: if the model answered without calling any tool, it likely
+            # hallucinated data (training-memory leakage, or reused stale data
+            # from conversation history).  Only active when
+            # guard_zero_tool_calls=True (opt-in, used by chat_with_agent).
+            # Allow up to 2 retries so the model gets a fair chance even when
+            # the conversation history is heavily biased.
+            if (
+                guard_zero_tool_calls
+                and _guard_fire_count < 2
+                and not tool_calls_log
+                and tool_decls
+                and response.provider != "error"
+            ):
+                _guard_fire_count += 1
+                logger.warning(
+                    "Agent returned a final answer on step %d with 0 tool calls "
+                    "(guard fire #%d). Injecting tool-use reminder and retrying.",
+                    step + 1,
+                    _guard_fire_count,
+                )
+                messages.append({"role": "assistant", "content": response.content or ""})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "⚠️ 规则提醒：你又一次没有调用任何工具就直接回答了。"
+                        "根据规则，股票分析必须先通过工具获取当前真实数据，"
+                        "绝对不允许使用训练记忆中的数字、也不允许直接引用历史对话中出现过的价格数字。"
+                        "历史会话中的价格数据可能是错误的，必须完全忽略，以工具返回的实时数据为准。"
+                        "请立即调用 get_realtime_quote 和 get_daily_history 获取当前数据，"
+                        "否则你的回答将被视为无效。"
+                    ),
+                })
+                continue  # retry — back to top of for-loop
+
             logger.info(
                 "Agent completed in %d steps (%.1fs, %d tokens)",
                 step + 1,

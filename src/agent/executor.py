@@ -593,7 +593,13 @@ class AgentExecutor:
         # Persist the user turn immediately so the session appears in history during processing
         conversation_manager.add_message(session_id, "user", message)
 
-        result = self._run_loop(messages, tool_decls, parse_dashboard=False, progress_callback=progress_callback)
+        result = self._run_loop(
+            messages,
+            tool_decls,
+            parse_dashboard=False,
+            progress_callback=progress_callback,
+            guard_zero_tool_calls=True,  # Prevent hallucinated data from training memory
+        )
 
         # Persist assistant reply (or error note) for context continuity
         if result.success:
@@ -604,7 +610,14 @@ class AgentExecutor:
 
         return result
 
-    def _run_loop(self, messages: List[Dict[str, Any]], tool_decls: List[Dict[str, Any]], parse_dashboard: bool, progress_callback: Optional[Callable] = None) -> AgentResult:
+    def _run_loop(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_decls: List[Dict[str, Any]],
+        parse_dashboard: bool,
+        progress_callback: Optional[Callable] = None,
+        guard_zero_tool_calls: bool = False,
+    ) -> AgentResult:
         """Delegate to the shared runner and adapt the result.
 
         This preserves the exact same observable behaviour as the original
@@ -618,6 +631,7 @@ class AgentExecutor:
             max_steps=self.max_steps,
             progress_callback=progress_callback,
             max_wall_clock_seconds=self.timeout_seconds,
+            guard_zero_tool_calls=guard_zero_tool_calls,
         )
 
         model_str = loop_result.model

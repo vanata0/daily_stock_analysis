@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -3104,64 +3105,72 @@ class SearchService:
             provider_max_results,
         )
         
-        # 轮流使用不同的搜索引擎
-        provider_index = 0
-        
-        for dim in search_dimensions:
-            if search_count >= max_searches:
-                break
-            
-            # 选择搜索引擎（轮流使用）
-            available_providers = [p for p in self._providers if p.is_available]
-            if not available_providers:
-                break
-            
-            provider = available_providers[provider_index % len(available_providers)]
-            provider_index += 1
-            
-            logger.info(f"[情报搜索] {dim['desc']}: 使用 {provider.name}")
+        # 选取要执行的维度（遵守 max_searches 上限）
+        available_providers = [p for p in self._providers if p.is_available]
+        if not available_providers:
+            return results
 
+        dims_to_run = search_dimensions[:max_searches]
+
+        # 预先按轮询分配 provider，保持与原逻辑一致
+        dim_provider_pairs = [
+            (dim, available_providers[i % len(available_providers)])
+            for i, dim in enumerate(dims_to_run)
+        ]
+
+        def _search_one(dim_provider):
+            dim, provider = dim_provider
+            logger.info("[情报搜索] %s: 使用 %s", dim['desc'], provider.name)
             if isinstance(provider, TavilySearchProvider) and dim.get('tavily_topic'):
-                response = provider.search(
+                resp = provider.search(
                     dim['query'],
                     max_results=provider_max_results,
                     days=search_days,
                     topic=dim['tavily_topic'],
                 )
             else:
-                response = provider.search(
+                resp = provider.search(
                     dim['query'],
                     max_results=provider_max_results,
                     days=search_days,
                 )
             if dim['strict_freshness']:
-                filtered_response = self._filter_news_response(
-                    response,
+                filtered = self._filter_news_response(
+                    resp,
                     search_days=search_days,
                     max_results=target_per_dimension,
                     log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
                 )
             else:
-                filtered_response = self._normalize_and_limit_response(
-                    response,
+                filtered = self._normalize_and_limit_response(
+                    resp,
                     max_results=target_per_dimension,
                 )
-            results[dim['name']] = filtered_response
-            search_count += 1
-            
-            if response.success:
-                logger.info(
-                    "[情报搜索] %s: 原始=%s条, 过滤后=%s条",
-                    dim['desc'],
-                    len(response.results),
-                    len(filtered_response.results),
-                )
-            else:
-                logger.warning(f"[情报搜索] {dim['desc']}: 搜索失败 - {response.error_message}")
-            
-            # 短暂延迟避免请求过快
-            time.sleep(0.5)
-        
+            return dim['name'], dim['desc'], resp, filtered
+
+        # 并发执行所有维度搜索，消除串行等待
+        max_workers = min(len(dim_provider_pairs), 6)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_search_one, dp): dp for dp in dim_provider_pairs}
+            for future in as_completed(futures):
+                try:
+                    dim_name, dim_desc, response, filtered_response = future.result()
+                    results[dim_name] = filtered_response
+                    if response.success:
+                        logger.info(
+                            "[情报搜索] %s: 原始=%s条, 过滤后=%s条",
+                            dim_desc,
+                            len(response.results),
+                            len(filtered_response.results),
+                        )
+                    else:
+                        logger.warning(
+                            "[情报搜索] %s: 搜索失败 - %s", dim_desc, response.error_message
+                        )
+                except Exception as exc:
+                    dp = futures[future]
+                    logger.warning("[情报搜索] %s 异常: %s", dp[0]['desc'], exc)
+
         return results
     
     def format_intel_report(self, intel_results: Dict[str, SearchResponse], stock_name: str) -> str:

@@ -8,6 +8,7 @@ validation hints, and category grouping.
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import cache
 from typing import Any, Dict, List, Optional
 
 from src.config import AGENT_MAX_STEPS_DEFAULT
@@ -2859,8 +2860,9 @@ def get_field_definition(key: str, value_hint: Optional[str] = None) -> Dict[str
     return field
 
 
+@cache
 def build_schema_response() -> Dict[str, Any]:
-    """Build schema payload grouped by category."""
+    """Build schema payload grouped by category. Result is memoized for the process lifetime."""
     category_map: Dict[str, Dict[str, Any]] = {}
     for category in get_category_definitions():
         category_map[category["category"]] = {**category, "fields": []}

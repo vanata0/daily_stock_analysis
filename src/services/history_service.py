@@ -12,6 +12,7 @@ Responsibilities:
 from __future__ import annotations
 import json
 import logging
+import time
 from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
@@ -34,6 +35,12 @@ if TYPE_CHECKING:
     from src.analyzer import AnalysisResult
 
 logger = logging.getLogger(__name__)
+
+# Module-level TTL cache for get_history_list results.
+# Key: (stock_code, start_date, end_date, page, limit)
+# Value: (expire_time, result_dict)
+_history_list_cache: Dict[tuple, tuple] = {}
+_HISTORY_LIST_CACHE_TTL = 300  # 5 minutes
 
 
 class MarkdownReportGenerationError(Exception):
@@ -82,11 +89,20 @@ class HistoryService:
         Returns:
             Dictionary containing total count and items
         """
+        # --- TTL cache ---
+        _cache_key = (stock_code, start_date, end_date, page, limit)
+        _now = time.time()
+        if _cache_key in _history_list_cache:
+            _exp, _cached = _history_list_cache[_cache_key]
+            if _now < _exp:
+                return _cached
+            del _history_list_cache[_cache_key]
+
         try:
             # Parse date parameters
             start_dt = None
             end_dt = None
-            
+
             if start_date:
                 try:
                     start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
@@ -125,11 +141,10 @@ class HistoryService:
                     "created_at": record.created_at.isoformat() if record.created_at else None,
                 })
             
-            return {
-                "total": total,
-                "items": items,
-            }
-            
+            result = {"total": total, "items": items}
+            _history_list_cache[_cache_key] = (time.time() + _HISTORY_LIST_CACHE_TTL, result)
+            return result
+
         except Exception as e:
             logger.error(f"查询历史列表失败: {e}", exc_info=True)
             return {"total": 0, "items": []}

@@ -65,3 +65,6 @@ jinja2>=3.1.0               # Jinja2 template engine for report rendering
 fastapi>=0.109.0            # 现代 Python Web 框架
 uvicorn[standard]>=0.27.0   # ASGI 服务器
 python-multipart>=0.0.6     # FastAPI File/Form upload support
+
+# 本地 DuckDB K 线缓存（ScreenerDBFetcher）
+duckdb>=0.10.0

@@ -3,8 +3,13 @@
 Provides:
 - ContextVar-based frozen target_date propagation across threads
 - ``load_history_df``: read from DB first, DataFetcherManager fallback
+- Per-stock in-memory session cache: within one stock's analysis run, the
+  first successful K-line fetch is cached so subsequent tool calls
+  (analyze_trend, get_daily_history, etc.) skip both the DB round-trip
+  and any network fetch.  The cache is cleared when
+  ``reset_frozen_target_date`` is called at the end of each stock run.
 
-Fixes #1066 – eliminates 45+ redundant HTTP requests per stock in Agent mode.
+Fixes #1066 – eliminates redundant HTTP requests per stock in Agent mode.
 """
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ import contextvars
 import logging
 from datetime import date, datetime, timedelta
 from threading import Lock
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -38,6 +43,43 @@ def get_frozen_target_date() -> Optional[date]:
 
 def reset_frozen_target_date(token: contextvars.Token) -> None:
     _frozen_target_date.reset(token)
+    _clear_session_df_cache()
+
+
+# ---------------------------------------------------------------------------
+# Per-stock in-memory session cache
+# Keyed by (normalized_code, frozen_target_date).  Within one stock analysis
+# run every tool call that needs K-line data (get_daily_history, analyze_trend,
+# etc.) shares the same frozen_target_date, so subsequent calls return the
+# cached DataFrame immediately without hitting DB or network again.
+# Different analysis days produce different keys, so no stale data concerns.
+# No explicit clearing needed — entries age out naturally when the process
+# restarts or frozen_target_date advances to the next trading day.
+# ---------------------------------------------------------------------------
+_session_df_cache: Dict[Tuple[str, Optional[date]], Tuple[pd.DataFrame, str]] = {}
+_session_cache_lock = Lock()
+
+
+def _clear_session_df_cache() -> None:
+    """Clear the per-stock in-memory session cache (called by reset_frozen_target_date)."""
+    with _session_cache_lock:
+        _session_df_cache.clear()
+
+
+def _session_cache_key(code: str) -> Tuple[str, Optional[date]]:
+    return (code, _frozen_target_date.get())
+
+
+def _session_cache_get(code: str) -> Optional[Tuple[pd.DataFrame, str]]:
+    key = _session_cache_key(code)
+    with _session_cache_lock:
+        return _session_df_cache.get(key)
+
+
+def _session_cache_set(code: str, df: pd.DataFrame, source: str) -> None:
+    key = _session_cache_key(code)
+    with _session_cache_lock:
+        _session_df_cache[key] = (df, source)
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +175,28 @@ def load_history_df(
     Returns ``(df, source)`` where *source* is ``"db_cache"`` on DB hit or the
     actual provider name on network fallback.  Returns ``(None, "none")`` when
     both paths fail.
+
+    Within one stock analysis run the first successful result is stored in the
+    per-stock in-memory session cache.  Subsequent calls for the same stock
+    (e.g. analyze_trend running after get_daily_history) return the cached
+    DataFrame immediately, avoiding redundant DB round-trips and network
+    fetches.  The cache is cleared by reset_frozen_target_date() at the end of
+    each stock run.
     """
+    from data_provider.base import normalize_stock_code as _norm
+    _norm_code = _norm(str(stock_code or "").strip())
+
+    # --- 0. In-memory session cache (fastest path) -------------------------
+    cached = _session_cache_get(_norm_code)
+    if cached is not None:
+        cached_df, cached_source = cached
+        if cached_df is not None and not cached_df.empty:
+            logger.debug(
+                "load_history_df(%s): session-cache hit (source=%s, rows=%d)",
+                stock_code, cached_source, len(cached_df),
+            )
+            return cached_df, cached_source
+
     from src.storage import get_db
 
     # Resolve effective end date
@@ -158,6 +221,7 @@ def load_history_df(
                 "load_history_df(%s): %d bars from DB (requested %d)",
                 stock_code, len(df), days,
             )
+            _session_cache_set(_norm_code, df, "db_cache")
             return df, "db_cache"
     except Exception as e:
         logger.debug("load_history_df(%s): DB read failed: %s", stock_code, e)
@@ -167,6 +231,7 @@ def load_history_df(
         manager = _get_fetcher_manager()
         df, source = manager.get_daily_data(stock_code, days=days)
         if df is not None and not df.empty:
+            _session_cache_set(_norm_code, df, source)
             return df, source
     except Exception as e:
         logger.warning("load_history_df(%s): DataFetcherManager failed: %s", stock_code, e)

@@ -28,6 +28,7 @@ import json
 import inspect
 import logging
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -464,6 +465,7 @@ class AgentOrchestrator:
                     [agents[0], agents[1]],
                     ctx,
                     timeout_seconds=_par_timeout_s,
+                    progress_callback=progress_callback,
                 )
                 for par_agent, par_result in zip(agents[:2], parallel_results):
                     stats.record_stage(par_result)
@@ -646,6 +648,7 @@ class AgentOrchestrator:
         agents: List[Any],
         ctx: AgentContext,
         timeout_seconds: Optional[float] = None,
+        progress_callback: Optional[Callable] = None,
     ) -> List[StageResult]:
         """Run a list of agents concurrently in a thread pool.
 
@@ -655,21 +658,35 @@ class AgentOrchestrator:
         ``technical_*`` keys) and IntelAgent (writes ``news_context``,
         ``intel_*`` keys) satisfy this constraint.
 
-        ``progress_callback`` is intentionally **not** forwarded to
-        individual agents because the callback is typically not
-        thread-safe.  The caller emits ``stage_start`` / ``stage_done``
-        events after all parallel stages complete.
+        ``progress_callback``, if provided, is wrapped in a threading.Lock
+        so that both parallel agents can emit events safely without
+        interleaving.  This restores the tool-call trace visible in the UI
+        that was lost when parallel execution was introduced.
 
         Args:
             agents: Agents to run concurrently.
             ctx: Shared context passed to every agent.
             timeout_seconds: Per-stage budget forwarded to
                 ``_run_stage_agent``; applies to each agent independently.
+            progress_callback: Optional callback; wrapped with a lock for
+                thread-safe concurrent use.
 
         Returns:
             ``StageResult`` list in the same order as ``agents``.
         """
         results: List[Optional[StageResult]] = [None] * len(agents)
+
+        # Wrap the callback with a lock so both parallel agents can emit
+        # events safely.  Without the lock the two threads would interleave
+        # writes to the SSE/WebSocket buffer.
+        safe_callback: Optional[Callable] = None
+        if progress_callback is not None:
+            _lock = threading.Lock()
+            _cb = progress_callback
+
+            def safe_callback(event: Dict[str, Any]) -> None:  # type: ignore[misc]
+                with _lock:
+                    _cb(event)
 
         with ThreadPoolExecutor(
             max_workers=len(agents),
@@ -680,7 +697,7 @@ class AgentOrchestrator:
                     self._run_stage_agent,
                     agent,
                     ctx,
-                    progress_callback=None,
+                    progress_callback=safe_callback,
                     timeout_seconds=timeout_seconds,
                 ): i
                 for i, agent in enumerate(agents)

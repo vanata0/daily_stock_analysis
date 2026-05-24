@@ -64,6 +64,10 @@ logger = logging.getLogger(__name__)
 # double-check 初始化 _single_stock_notify_lock 仍然线程安全。
 _SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD = threading.Lock()
 
+# 单股通知最大并发数：允许最多 3 条通知同时发送，超出时记录 WARNING 并跳过，
+# 避免单一 Lock 串行化所有通知推送导致长尾延迟。
+_NOTIFY_CONCURRENCY_CAP = 3
+
 
 class StockAnalysisPipeline:
     """
@@ -111,7 +115,7 @@ class StockAnalysisPipeline:
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
         self.analyzer = GeminiAnalyzer(config=self.config, skills=self.analysis_skills)
         self.notifier = NotificationService(source_message=source_message)
-        self._single_stock_notify_lock = threading.Lock()
+        self._single_stock_notify_lock = threading.BoundedSemaphore(_NOTIFY_CONCURRENCY_CAP)
         
         # 初始化搜索服务（可选，初始化失败不应阻断主分析流程）
         try:
@@ -1884,34 +1888,43 @@ class StockAnalysisPipeline:
             with _SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD:
                 notify_lock = getattr(self, "_single_stock_notify_lock", None)
                 if notify_lock is None:
-                    notify_lock = threading.Lock()
+                    notify_lock = threading.BoundedSemaphore(_NOTIFY_CONCURRENCY_CAP)
                     setattr(self, "_single_stock_notify_lock", notify_lock)
 
-        with notify_lock:
-            try:
-                if report_type == ReportType.FULL:
-                    report_content = self.notifier.generate_dashboard_report([result])
-                    logger.info(f"[{stock_code}] 使用完整报告格式")
-                elif report_type == ReportType.BRIEF:
-                    report_content = self.notifier.generate_brief_report([result])
-                    logger.info(f"[{stock_code}] 使用简洁报告格式")
-                else:
-                    report_content = self.notifier.generate_single_stock_report(result)
-                    logger.info(f"[{stock_code}] 使用精简报告格式")
+        acquired = notify_lock.acquire(blocking=False)
+        if not acquired:
+            logger.warning(
+                "[%s] 单股通知并发已达上限 (%d)，本次推送跳过",
+                stock_code,
+                _NOTIFY_CONCURRENCY_CAP,
+            )
+            return
+        try:
+            if report_type == ReportType.FULL:
+                report_content = self.notifier.generate_dashboard_report([result])
+                logger.info(f"[{stock_code}] 使用完整报告格式")
+            elif report_type == ReportType.BRIEF:
+                report_content = self.notifier.generate_brief_report([result])
+                logger.info(f"[{stock_code}] 使用简洁报告格式")
+            else:
+                report_content = self.notifier.generate_single_stock_report(result)
+                logger.info(f"[{stock_code}] 使用精简报告格式")
 
-                if self.notifier.send(
-                    report_content,
-                    email_stock_codes=[stock_code],
-                    route_type="report",
-                    severity="info",
-                    dedup_key=f"report:single:{stock_code}:{report_type.value}",
-                    cooldown_key=f"report:single:{stock_code}:{report_type.value}",
-                ):
-                    logger.info(f"[{stock_code}] 单股推送成功")
-                else:
-                    logger.warning(f"[{stock_code}] 单股推送失败")
-            except Exception as e:
-                logger.error(f"[{stock_code}] 单股推送异常: {e}")
+            if self.notifier.send(
+                report_content,
+                email_stock_codes=[stock_code],
+                route_type="report",
+                severity="info",
+                dedup_key=f"report:single:{stock_code}:{report_type.value}",
+                cooldown_key=f"report:single:{stock_code}:{report_type.value}",
+            ):
+                logger.info(f"[{stock_code}] 单股推送成功")
+            else:
+                logger.warning(f"[{stock_code}] 单股推送失败")
+        except Exception as e:
+            logger.error(f"[{stock_code}] 单股推送异常: {e}")
+        finally:
+            notify_lock.release()
 
     def _save_local_report(
         self,

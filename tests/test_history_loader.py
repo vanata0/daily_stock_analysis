@@ -12,6 +12,11 @@ import pandas as pd
 class HistoryLoaderTestCase(unittest.TestCase):
     """Tests for load_history_df and frozen target date ContextVar."""
 
+    def setUp(self):
+        # Clear the per-stock session cache so tests don't bleed into each other.
+        from src.services import history_loader
+        history_loader._clear_session_df_cache()
+
     # ------------------------------------------------------------------
     # ContextVar lifecycle
     # ------------------------------------------------------------------

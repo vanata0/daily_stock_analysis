@@ -65,7 +65,12 @@ class TestFetcherSourceOptimization(unittest.TestCase):
             longbridge_app_key="",
             longbridge_app_secret="",
             longbridge_access_token="",
+            tickflow_api_key="",
         )
+
+        # Stub for local-API fetchers that simulate the server being unavailable
+        class _UnavailableFetcher(_StubFetcher):
+            is_available = False
 
         with patch("data_provider.efinance_fetcher.EfinanceFetcher", return_value=_StubFetcher("EfinanceFetcher", 0)), patch(
             "data_provider.akshare_fetcher.AkshareFetcher",
@@ -85,7 +90,13 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         ) as mock_tushare, patch(
             "data_provider.longbridge_fetcher.LongbridgeFetcher",
             return_value=_StubFetcher("LongbridgeFetcher", 5),
-        ) as mock_longbridge:
+        ) as mock_longbridge, patch(
+            "data_provider.stock_new_api_fetcher.StockNewAPIFetcher",
+            return_value=_UnavailableFetcher("StockNewAPIFetcher", -1),
+        ), patch(
+            "data_provider.screener_db_fetcher.ScreenerDBFetcher",
+            return_value=_UnavailableFetcher("ScreenerDBFetcher", -1),
+        ):
             manager = DataFetcherManager()
 
         self.assertEqual(

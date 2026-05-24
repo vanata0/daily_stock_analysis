@@ -42,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] config_registry: `build_schema_response` 加 `@functools.cache`，进程内只构建一次 schema，重复请求零开销。
 - [改进] name_to_code_resolver: `resolve_name_to_code` 结果加 TTL 缓存（1 小时），AkShare/模糊匹配同一名称只计算一次。
 - [改进] history_service: `HistoryService.get_history_list` 结果加 TTL 缓存（5 分钟），高频翻页不重复查 DB。
+- [改进] TickFlowFetcher: 扩展为通用日线 K 线数据源（`client.klines.get` P0 优先级），替代持续失败的 EfinanceFetcher；响应时间约 0.7s/股，较 EfinanceFetcher 快 10-12 倍；支持全市场（SH/SZ/BJ）及 ETF；通过 `TICKFLOW_API_KEY` 和 `TICKFLOW_KLINE_PRIORITY` 配置。
+- [改进] history_loader: `load_history_df` 新增按 `(stock_code, frozen_target_date)` 索引的进程内会话缓存；同一股票分析周期内首次 K 线加载结果被缓存后，后续调用（如 `analyze_trend`、第二个 `get_daily_history`）直接命中内存缓存，消除每股 ~10s 的重复网络拉取（Bottleneck #1）；不同日期键天然隔离，无需显式清理。
+- [改进] StockNewAPIFetcher: 新增本地 stock_new HTTP API 最高优先级 K 线数据源（P-1），通过 `GET /api/data/kline/{code}?count=500` 获取前复权日线（每日 16:20 自动更新）；响应约 22ms/股，较 TickFlow 快 30 倍；API 不可达时自动降级到 ScreenerDBFetcher，两者均不可用时透明回落到 TickFlow；通过 `STOCK_NEW_API_URL`（默认 `http://localhost:8001`）配置。
+- [改进] ScreenerDBFetcher: 新增本地 DuckDB 前复权 K 线源（P-1，stock_new HTTP API 不可用时备用）；DuckDB 锁冲突时立即标记不可用并回落到下一数据源，不抛未捕获异常。
+- [修复] orchestrator: `_run_parallel_stages` 并发运行 TechnicalAgent + IntelAgent 时 `progress_callback` 被置 `None` 导致工具调用轨迹从 UI 消失；改为用 `threading.Lock` 包装 callback 后传入，两个并发 agent 均可安全发送事件，轨迹恢复可见。
+- [修复] runner: 新增 `guard_zero_tool_calls` 保护逻辑（opt-in，仅 `chat_with_agent` 启用）：检测"零工具调用直接返回"情形，注入含"忽略历史对话价格"的强规则提醒后重试，最多重试 2 次（应对会话历史中已有错误价格污染上下文的情形）；防止 LLM 在长上下文会话末尾跳过 get_realtime_quote / get_daily_history、从训练记忆或历史对话捏造价格/均线数据（根因：DeepSeek V4 Flash 在 ~33k token 会话末尾连续两次跳过工具调用，导致 000505 价格报 9.38 元而非 6.23 元）；error provider 响应不触发重试。
+- [测试] 新增 4 项 `run_agent_loop` guard 单测：首次零工具调用触发重试并最终成功、连续两次零工具调用后第三次调用工具成功、guard 默认关闭直接返回、error provider 不重试。
+- [改进] search_service: `search_comprehensive_intel` 由串行循环改为 `ThreadPoolExecutor(max_workers=6)` 并发搜索，各维度同时发出请求；移除维度间 0.5s sleep；Bocha 作为主力 provider，不再有 SearXNG 串行限速问题，多维情报搜索理论节省 80%+ 壁钟时间。
 - [改进] config: 从 `_load_from_env` 抽出 `_load_llm_config()` 和 `_load_notification_config()` 两个独立子方法，减少单函数行数约 40%。
 - [测试] 新增 test_cache_layer.py，覆盖 schema 缓存命中数、resolver TTL 命中/过期/驱逐、history 缓存命中/过期，以及 config split 子方法返回 dict 的冒烟测试。
 - [改进] akshare_fetcher 筹码分布新增本地 CYQ 算法回退：当 stock_cyq_em API 失败或返回空时，自动用新浪/腾讯 K 线本地计算，source 标记为 "local"，分析报告中以"（估算）"注明精度差异。

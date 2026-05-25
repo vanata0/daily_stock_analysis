@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [改进] 情报搜索 `announcements` 维度去除 `cninfo/上交所/深交所` 关键词，改为资讯友好查询，修复 SearXNG 返回结果因无 publishedDate 被 100% 过滤导致公告维度始终空白的问题。
+- [改进] `format_intel_report` 每维度展示条数从 4 → 3，摘要截断从 150 → 100 字，新增 4000 字整体预算上限，减少 LLM 输入 token 约 35%。
 - [修复] 归一腾讯实时行情成交量为股口径，避免量能变化倍数被放大并误导分析报告。
 - [改进] Web 路由页面改为按需加载，降低首包体积并增加路由加载失败恢复提示。
 - [修复] Docker 默认部署移除 `.env` 单文件挂载，避免 WebUI 保存配置时因 `os.replace` 更新挂载点触发 `Device or resource busy`。

@@ -3519,11 +3519,14 @@ class SearchService:
                     'name': 'announcements',
                     'query': (
                         f"{stock_name} {stock_code} 公告 指数调整 成分变化"
-                        if is_index_etf else f"{stock_name} {stock_code} 公司公告 重要公告 上交所 深交所 cninfo"
+                        if is_index_etf else f"{stock_name} {stock_code} 最新公告 重要公告 公司公告"
                     ),
                     'desc': '公司公告',
                     'tavily_topic': 'news',
+                    # Bocha 能返回带时间戳的公告资讯，SearXNG 公告类结果无 publishedDate
+                    # 会被 strict_freshness 过滤为 0 条。强制走 Bocha。
                     'strict_freshness': True,
+                    'provider_preference': 'bocha',
                 },
                 {
                     'name': 'earnings',
@@ -3572,9 +3575,19 @@ class SearchService:
 
         dims_to_run = search_dimensions[:max_searches]
 
-        # 预先按轮询分配 provider，保持与原逻辑一致
+        # 按维度分配 provider：
+        # - 若维度指定了 provider_preference，优先选匹配该名称（大小写不敏感）的 provider
+        # - 找不到匹配时降级为轮询，保持与原逻辑一致
+        def _pick_provider(dim: dict, idx: int) -> 'BaseSearchProvider':
+            pref = (dim.get('provider_preference') or '').lower()
+            if pref:
+                for p in available_providers:
+                    if pref in p.name.lower():
+                        return p
+            return available_providers[idx % len(available_providers)]
+
         dim_provider_pairs = [
-            (dim, available_providers[i % len(available_providers)])
+            (dim, _pick_provider(dim, i))
             for i, dim in enumerate(dims_to_run)
         ]
 
@@ -3633,19 +3646,30 @@ class SearchService:
 
         return results
     
-    def format_intel_report(self, intel_results: Dict[str, SearchResponse], stock_name: str) -> str:
+    def format_intel_report(
+        self,
+        intel_results: Dict[str, SearchResponse],
+        stock_name: str,
+        *,
+        max_results_per_dim: int = 3,
+        snippet_max_chars: int = 100,
+        report_char_budget: int = 4000,
+    ) -> str:
         """
         格式化情报搜索结果为报告
-        
+
         Args:
             intel_results: 多维度搜索结果
             stock_name: 股票名称
-            
+            max_results_per_dim: 每个维度最多展示的结果数（默认 3，减少 LLM 输入 token）
+            snippet_max_chars: 摘要最大字符数（默认 100，原为 150）
+            report_char_budget: 整体报告字符预算，超出后截断并附提示（默认 4000）
+
         Returns:
             格式化的情报报告文本
         """
         lines = [f"【{stock_name} 情报搜索结果】"]
-        
+
         # 维度展示顺序
         display_order = ['latest_news', 'announcements', 'market_analysis', 'risk_check', 'earnings', 'industry']
 
@@ -3661,20 +3685,18 @@ class SearchService:
         for dim_name in display_order:
             if dim_name not in intel_results:
                 continue
-                
+
             resp = intel_results[dim_name]
-            
+
             # 获取维度描述
             dim_desc = dim_labels.get(dim_name, dim_name)
-            
+
             lines.append(f"\n{dim_desc} (来源: {resp.provider}):")
             if resp.success and resp.results:
-                # 增加显示条数
-                for i, r in enumerate(resp.results[:4], 1):
+                for i, r in enumerate(resp.results[:max_results_per_dim], 1):
                     date_str = f" [{r.published_date}]" if r.published_date else ""
                     lines.append(f"  {i}. {r.title}{date_str}")
-                    # 如果摘要太短，可能信息量不足
-                    snippet = r.snippet[:150] if len(r.snippet) > 20 else r.snippet
+                    snippet = r.snippet[:snippet_max_chars] if len(r.snippet) > 20 else r.snippet
                     lines.append(f"     {snippet}...")
                     if r.relevance_category or r.relevance_reasons:
                         relevance_parts = []
@@ -3683,12 +3705,18 @@ class SearchService:
                         if r.relevance_score is not None:
                             relevance_parts.append(f"score={r.relevance_score}")
                         if r.relevance_reasons:
-                            relevance_parts.append(f"依据: {'；'.join(r.relevance_reasons[:3])}")
+                            relevance_parts.append(f"依据: {'；'.join(r.relevance_reasons[:2])}")
                         lines.append(f"     关联度: {'; '.join(relevance_parts)}")
             else:
                 lines.append("  未找到相关信息")
-        
-        return "\n".join(lines)
+
+        report = "\n".join(lines)
+
+        # 总字符预算：超出时截断并附提示，避免向 LLM 输入过长上下文
+        if len(report) > report_char_budget:
+            report = report[:report_char_budget] + f"\n...（情报报告已截断至 {report_char_budget} 字）"
+
+        return report
     
     def batch_search(
         self,

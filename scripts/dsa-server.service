@@ -1,0 +1,22 @@
+[Unit]
+Description=Daily Stock Analysis API Server
+Documentation=https://github.com/ZhuLinsen/daily_stock_analysis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=oracle
+WorkingDirectory=/home/oracle/daily_stock_analysis
+ExecStart=/home/oracle/daily_stock_analysis/venv/bin/python3 main.py --serve-only
+Restart=on-failure
+RestartSec=10
+# 日志由应用自身管理，systemd 只接管 stdout/stderr
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dsa-server
+# 启动超时宽松一些，首次 akshare 初始化较慢
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

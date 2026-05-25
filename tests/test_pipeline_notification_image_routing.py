@@ -16,6 +16,12 @@ from tests.litellm_stub import ensure_litellm_stub
 ensure_litellm_stub()
 
 from src.core.pipeline import StockAnalysisPipeline, NotificationChannel
+from src.services.run_diagnostics import (
+    activate_run_diagnostic_context,
+    build_run_diagnostic_summary,
+    current_diagnostic_snapshot,
+    reset_run_diagnostic_context,
+)
 from src.enums import ReportType
 
 
@@ -343,6 +349,43 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
         pipeline.notifier.send_to_email.assert_called_once_with("report:000001")
         pipeline.notifier.record_noise_control.assert_not_called()
         pipeline.notifier.release_noise_control.assert_called_once()
+
+    def test_notification_summary_degraded_when_only_partial_channels_fail(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = _FakeRoutedNotifier([NotificationChannel.WECHAT, NotificationChannel.TELEGRAM])
+        pipeline.config = SimpleNamespace(stock_email_groups=[])
+        pipeline.notifier.send_to_wechat.return_value = True
+        pipeline.notifier.send_to_telegram.return_value = False
+        results = [SimpleNamespace(code="000001")]
+
+        token = activate_run_diagnostic_context(
+            trace_id="trace-notify",
+            query_id="query-notify",
+            stock_code="000001",
+            trigger_source="api",
+        )
+        try:
+            pipeline._send_notifications(results, ReportType.SIMPLE)
+            snapshot = current_diagnostic_snapshot()
+        finally:
+            reset_run_diagnostic_context(token)
+
+        self.assertEqual(snapshot["notification_runs"][0]["channel"], "wechat")
+        self.assertEqual(snapshot["notification_runs"][0]["success"], True)
+        self.assertEqual(snapshot["notification_runs"][1]["channel"], "telegram")
+        self.assertEqual(snapshot["notification_runs"][1]["success"], False)
+
+        summary = build_run_diagnostic_summary(
+            context_snapshot={"diagnostics": snapshot},
+            raw_result={"success": True, "model_used": "deepseek-chat"},
+            report_saved=True,
+        )
+
+        self.assertEqual(summary["components"]["notification"]["status"], "degraded")
+        self.assertIn(
+            "telegram",
+            summary["components"]["notification"]["details"]["failed"],
+        )
 
 
 if __name__ == "__main__":

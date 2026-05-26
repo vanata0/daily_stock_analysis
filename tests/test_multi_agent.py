@@ -35,7 +35,8 @@ from src.agent.protocols import (
     StageResult,
     StageStatus,
 )
-from src.config import AGENT_MAX_STEPS_DEFAULT
+from src.config import AGENT_MAX_STEPS_DEFAULT, Config
+from src.storage import DatabaseManager
 
 
 # ============================================================
@@ -829,7 +830,16 @@ class TestOrchestratorExecution(unittest.TestCase):
         )
 
     def test_execute_pipeline_timeout_after_intel_synthesizes_dashboard(self):
-        orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=1, agent_risk_override=True))
+        # Use a 20s timeout so the budget guard (15s minimum) does NOT fire
+        # after technical.  Instead, the pipeline times out AFTER intel completes.
+        # Time mock sequence (6 calls in the tech+intel sequential block):
+        #   call 1  t0 = 0.0
+        #   call 2  top-of-loop elapsed = 0.1  (remaining=19.9, no budget guard)
+        #   call 3  tech_timeout calc = 0.2
+        #   call 4  elapsed_after_tech = 0.3   (remaining=19.7 >= 15 → intel runs)
+        #   call 5  intel_timeout calc = 0.4
+        #   call 6  elapsed_after_intel = 21.0 (>= 20 → timeout triggered)
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=20, agent_risk_override=True))
         ctx = AgentContext(query="test", stock_code="301308", stock_name="江波龙")
         ctx.set_data("realtime_quote", {"price": 326.17, "volume_ratio": 1.0, "turnover_rate": 6.77})
         ctx.set_data("chip_distribution", {"profit_ratio": 68.8, "avg_cost": 307.67, "concentration_90": 15.28})
@@ -852,7 +862,7 @@ class TestOrchestratorExecution(unittest.TestCase):
         intel.run.return_value = self._stage_result("intel")
 
         with patch.object(orch, "_build_agent_chain", return_value=[technical, intel]):
-            with patch("src.agent.orchestrator.time.time", side_effect=[0.0, 0.1, 0.2, 0.3, 1.2, 1.2, 1.2]):
+            with patch("src.agent.orchestrator.time.time", side_effect=[0.0, 0.1, 0.2, 0.3, 0.4, 21.0, 21.0, 21.0]):
                 result = orch._execute_pipeline(ctx, parse_dashboard=True)
 
         self.assertTrue(result.success)
@@ -912,6 +922,54 @@ class TestOrchestratorExecution(unittest.TestCase):
         build_history.assert_called_once()
         self.assertEqual(build_history.call_args.args[0], "session-1")
         self.assertIs(build_history.call_args.args[1], orch.llm_adapter)
+
+    def test_chat_does_not_read_or_write_provider_trace(self):
+        from src.agent.orchestrator import OrchestratorResult
+
+        DatabaseManager.reset_instance()
+        Config.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        session_id = "multi-agent-trace-boundary"
+        user_id = db.save_conversation_message(session_id, "user", "previous question")
+        assistant_id = db.save_conversation_message(session_id, "assistant", "previous answer")
+        db.save_agent_provider_turn(
+            session_id=session_id,
+            run_id="run-existing",
+            provider="deepseek",
+            model="deepseek/deepseek-chat",
+            anchor_user_message_id=user_id,
+            anchor_assistant_message_id=assistant_id,
+            messages=[
+                {
+                    "role": "assistant",
+                    "reasoning_content": "reasoning",
+                    "tool_calls": [{"id": "call_1", "name": "echo", "arguments": {}}],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "tool-result"},
+            ],
+            contains_reasoning=True,
+            contains_tool_calls=True,
+            contains_thinking_blocks=False,
+            must_roundtrip=True,
+            estimated_tokens=10,
+        )
+
+        orch = self._make_orchestrator()
+        try:
+            with patch.object(orch, "_execute_pipeline", return_value=OrchestratorResult(success=True, content="ok")):
+                with patch("src.agent.orchestrator.build_visible_chat_history", return_value=[]) as build_history:
+                    with patch.object(db, "get_agent_provider_turns", wraps=db.get_agent_provider_turns) as get_turns:
+                        result = orch.chat("hello", session_id)
+
+            self.assertTrue(result.success)
+            build_history.assert_called_once()
+            get_turns.assert_not_called()
+            rows = db.get_agent_provider_turns(session_id)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["run_id"], "run-existing")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
 
     def test_chat_persists_user_and_assistant_messages(self):
         from src.agent.orchestrator import OrchestratorResult

@@ -446,11 +446,13 @@ class AgentOrchestrator:
                     parse_dashboard=parse_dashboard,
                 )
 
-            # ── Parallel TechnicalAgent + IntelAgent (standard mode only) ──
-            # In standard mode the first two stages are always TechnicalAgent
-            # and IntelAgent.  They are independent (write to disjoint
-            # ctx.data keys) so we can run them concurrently to cut wall-clock
-            # time by ~50 % on the longest of the two LLM calls.
+            # ── Sequential TechnicalAgent then IntelAgent (standard mode only) ──
+            # In standard mode the first two stages are TechnicalAgent and
+            # IntelAgent.  They run sequentially so that the budget guard can
+            # prevent IntelAgent from starting when insufficient time remains
+            # after TechnicalAgent completes.  The budget guard requires
+            # index > 0, so we run TechnicalAgent first (at index == 0, no
+            # guard) then check budget before launching IntelAgent.
             if (
                 self.mode == "standard"
                 and index == 0
@@ -458,52 +460,134 @@ class AgentOrchestrator:
                 and getattr(agents[0], "agent_name", None) == "technical"
                 and getattr(agents[1], "agent_name", None) == "intel"
             ):
-                _par_timeout_s = (
+                # ── Stage 0: TechnicalAgent ──
+                _tech_timeout_s = (
                     max(0.0, timeout_s - (time.time() - t0))
                     if timeout_s
                     else None
                 )
-                parallel_results = self._run_parallel_stages(
-                    [agents[0], agents[1]],
+                tech_result = self._run_stage_agent(
+                    agents[0],
                     ctx,
-                    timeout_seconds=_par_timeout_s,
                     progress_callback=progress_callback,
+                    timeout_seconds=_tech_timeout_s,
                 )
-                for par_agent, par_result in zip(agents[:2], parallel_results):
-                    stats.record_stage(par_result)
-                    all_tool_calls.extend(
-                        tc for tc in (par_result.meta.get("tool_calls_log") or [])
+                stats.record_stage(tech_result)
+                all_tool_calls.extend(
+                    tc for tc in (tech_result.meta.get("tool_calls_log") or [])
+                )
+                models_used.extend(tech_result.meta.get("models_used", []))
+                if progress_callback:
+                    progress_callback({
+                        "type": "stage_done",
+                        "stage": agents[0].agent_name,
+                        "status": tech_result.status.value,
+                        "duration": tech_result.duration_s,
+                    })
+                if tech_result.status == StageStatus.FAILED:
+                    logger.error(
+                        "[Orchestrator] critical stage 'technical' failed: %s",
+                        tech_result.error,
                     )
-                    models_used.extend(par_result.meta.get("models_used", []))
+                    return OrchestratorResult(
+                        success=False,
+                        error=f"Stage 'technical' failed: {tech_result.error}",
+                        stats=stats,
+                        total_tokens=stats.total_tokens,
+                        tool_calls_log=all_tool_calls,
+                    )
+
+                # ── Budget guard before IntelAgent ──
+                _elapsed_after_tech = time.time() - t0
+                _remaining_after_tech = (
+                    timeout_s - _elapsed_after_tech if timeout_s else None
+                )
+                if (
+                    timeout_s
+                    and _remaining_after_tech is not None
+                    and _remaining_after_tech < stage_min_budget_s
+                ):
+                    logger.warning(
+                        "[Orchestrator] pipeline insufficient budget before stage 'intel' "
+                        "(%.1fs remaining, min %ds)",
+                        _remaining_after_tech,
+                        stage_min_budget_s,
+                    )
                     if progress_callback:
                         progress_callback({
-                            "type": "stage_done",
-                            "stage": par_agent.agent_name,
-                            "status": par_result.status.value,
-                            "duration": par_result.duration_s,
+                            "type": "pipeline_timeout",
+                            "stage": agents[1].agent_name,
+                            "elapsed": round(_elapsed_after_tech, 2),
+                            "timeout": timeout_s,
                         })
-                    if par_result.status == StageStatus.FAILED:
-                        if par_agent.agent_name == "intel":
-                            # intel is non-critical — degrade gracefully
-                            logger.warning(
-                                "[Orchestrator] non-critical parallel stage '%s' failed: %s",
-                                par_agent.agent_name,
-                                par_result.error,
-                            )
-                        else:
-                            logger.error(
-                                "[Orchestrator] critical parallel stage '%s' failed: %s",
-                                par_agent.agent_name,
-                                par_result.error,
-                            )
-                            return OrchestratorResult(
-                                success=False,
-                                error=f"Stage '{par_agent.agent_name}' failed: {par_result.error}",
-                                stats=stats,
-                                total_tokens=stats.total_tokens,
-                                tool_calls_log=all_tool_calls,
-                            )
-                index = 2  # advance past both parallel agents
+                    return self._build_budget_skip_result(
+                        stats,
+                        all_tool_calls,
+                        models_used,
+                        _elapsed_after_tech,
+                        timeout_s,
+                        agents[1].agent_name,
+                        _remaining_after_tech,
+                        stage_min_budget_s,
+                        ctx=ctx,
+                        parse_dashboard=parse_dashboard,
+                    )
+
+                # ── Stage 1: IntelAgent ──
+                _intel_timeout_s = (
+                    max(0.0, timeout_s - (time.time() - t0))
+                    if timeout_s
+                    else None
+                )
+                intel_result = self._run_stage_agent(
+                    agents[1],
+                    ctx,
+                    progress_callback=progress_callback,
+                    timeout_seconds=_intel_timeout_s,
+                )
+                stats.record_stage(intel_result)
+                all_tool_calls.extend(
+                    tc for tc in (intel_result.meta.get("tool_calls_log") or [])
+                )
+                models_used.extend(intel_result.meta.get("models_used", []))
+                if progress_callback:
+                    progress_callback({
+                        "type": "stage_done",
+                        "stage": agents[1].agent_name,
+                        "status": intel_result.status.value,
+                        "duration": intel_result.duration_s,
+                    })
+                if intel_result.status == StageStatus.FAILED:
+                    # intel is non-critical — degrade gracefully
+                    logger.warning(
+                        "[Orchestrator] non-critical stage 'intel' failed: %s",
+                        intel_result.error,
+                    )
+
+                # ── Timeout check after IntelAgent ──
+                _elapsed_after_intel = time.time() - t0
+                if timeout_s and _elapsed_after_intel >= timeout_s:
+                    logger.error(
+                        "[Orchestrator] pipeline timed out after stage 'intel'",
+                    )
+                    if progress_callback:
+                        progress_callback({
+                            "type": "pipeline_timeout",
+                            "stage": "intel",
+                            "elapsed": round(_elapsed_after_intel, 2),
+                            "timeout": timeout_s,
+                        })
+                    return self._build_timeout_result(
+                        stats,
+                        all_tool_calls,
+                        models_used,
+                        _elapsed_after_intel,
+                        timeout_s,
+                        ctx=ctx,
+                        parse_dashboard=parse_dashboard,
+                    )
+
+                index = 2  # advance past both handled agents
                 continue
 
             if (

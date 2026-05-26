@@ -747,6 +747,10 @@ def build_run_diagnostic_summary(
         run for run in _as_list(diagnostics.get("provider_runs"))
         if isinstance(run, dict)
     ]
+    llm_runs = [
+        run for run in _as_list(diagnostics.get("llm_runs"))
+        if isinstance(run, dict)
+    ]
 
     components = {
         "realtime_quote": _provider_component(
@@ -768,6 +772,7 @@ def build_run_diagnostic_summary(
     }
 
     has_evidence = bool(snapshot or raw or diagnostics or report_saved is not None)
+    has_core_diagnostic_runs = bool(provider_runs or llm_runs)
     if not has_evidence or not diagnostics:
         status = "unknown"
     elif components["llm"].status == "failed" or components["history"].status == "failed":
@@ -775,6 +780,8 @@ def build_run_diagnostic_summary(
     elif any(component.status in {"failed", "degraded"} for component in components.values()):
         status = "degraded"
     elif all(component.status == "unknown" for component in components.values()):
+        status = "unknown"
+    elif not has_core_diagnostic_runs:
         status = "unknown"
     else:
         status = "normal"

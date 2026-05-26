@@ -239,18 +239,17 @@ class TestExecutePipelineParallel(unittest.TestCase):
         orch._build_agent_chain = MagicMock()
         return orch
 
-    def test_standard_mode_runs_parallel(self):
-        """In standard mode, technical + intel run concurrently."""
+    def test_standard_mode_runs_technical_then_intel(self):
+        """In standard mode, technical runs first, then intel (sequential with budget guard)."""
         orch = self._make_pipeline_orch(mode="standard")
-        delays = {}
-        start_times = {}
+        call_order = []
 
-        def _make_timing_agent(name, sleep=0.08):
+        def _make_ordering_agent(name, sleep=0.02):
             agent = MagicMock()
             agent.agent_name = name
 
             def _run(ctx, **kw):
-                start_times[name] = time.time()
+                call_order.append(name)
                 time.sleep(sleep)
                 return StageResult(
                     stage_name=name,
@@ -262,25 +261,23 @@ class TestExecutePipelineParallel(unittest.TestCase):
             agent.run.side_effect = _run
             return agent
 
-        technical = _make_timing_agent("technical")
-        intel = _make_timing_agent("intel")
-        decision = _make_timing_agent("decision", sleep=0.01)
+        technical = _make_ordering_agent("technical")
+        intel = _make_ordering_agent("intel")
+        decision = _make_ordering_agent("decision", sleep=0.005)
 
         orch._build_agent_chain.return_value = [technical, intel, decision]
         ctx = _make_ctx()
 
-        t0 = time.time()
         orch._execute_pipeline(ctx)
-        elapsed = time.time() - t0
 
-        # Both should have started close together (not 80ms apart)
-        if "technical" in start_times and "intel" in start_times:
-            start_gap = abs(start_times["technical"] - start_times["intel"])
-            self.assertLess(
-                start_gap,
-                0.05,
-                f"technical and intel should start nearly simultaneously, gap={start_gap:.3f}s",
-            )
+        # technical must run before intel (sequential ordering)
+        self.assertIn("technical", call_order)
+        self.assertIn("intel", call_order)
+        self.assertLess(
+            call_order.index("technical"),
+            call_order.index("intel"),
+            "technical must start before intel",
+        )
 
     def test_standard_mode_both_results_recorded(self):
         """Both stage results are recorded in stats after parallel run."""

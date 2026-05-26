@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { historyApi } from '../../api/history';
 import type { ReportLanguage } from '../../types/analysis';
 import { markdownToPlainText } from '../../utils/markdown';
+import { copyToClipboard } from '../../utils/clipboard';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import { Tooltip } from '../common/Tooltip';
 
@@ -28,28 +29,30 @@ export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
   const [content, setContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [copiedType, setCopiedType] = useState<'markdown' | 'text' | null>(null);
+  const [copiedType, setCopiedType] = useState<'markdown' | 'text' | 'error' | null>(null);
 
   const handleCopyMarkdown = useCallback(async () => {
     if (!content) return;
-    try {
-      await navigator.clipboard.writeText(content);
+    const ok = await copyToClipboard(content);
+    if (ok) {
       setCopiedType('markdown');
       setTimeout(() => setCopiedType(null), 2000);
-    } catch (error) {
-      console.error('Copy failed:', error);
+    } else {
+      setCopiedType('error');
+      setTimeout(() => setCopiedType(null), 3000);
     }
   }, [content]);
 
   const handleCopyPlainText = useCallback(async () => {
     if (!content) return;
-    try {
-      const plainText = markdownToPlainText(content);
-      await navigator.clipboard.writeText(plainText);
+    const plainText = markdownToPlainText(content);
+    const ok = await copyToClipboard(plainText);
+    if (ok) {
       setCopiedType('text');
       setTimeout(() => setCopiedType(null), 2000);
-    } catch (error) {
-      console.error('Copy failed:', error);
+    } else {
+      setCopiedType('error');
+      setTimeout(() => setCopiedType(null), 3000);
     }
   }, [content]);
 
@@ -107,7 +110,11 @@ export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
                 className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
                 aria-label={text.copyMarkdownSource}
               >
-                {copiedType === 'markdown' ? (
+                {copiedType === 'error' ? (
+                  <svg className="h-6 w-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                ) : copiedType === 'markdown' ? (
                   <svg className="h-6 w-6 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
@@ -129,7 +136,11 @@ export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
                 className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
                 aria-label={text.copyPlainText}
               >
-                {copiedType === 'text' ? (
+                {copiedType === 'error' ? (
+                  <svg className="h-6 w-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                ) : copiedType === 'text' ? (
                   <svg className="h-6 w-6 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>

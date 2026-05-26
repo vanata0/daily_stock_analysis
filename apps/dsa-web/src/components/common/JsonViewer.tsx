@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { copyToClipboard } from '../../utils/clipboard';
 
 interface JsonViewerProps {
   data: Record<string, unknown> | unknown[] | null | undefined;
@@ -15,7 +16,7 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
   maxHeight = '400px',
   className = '',
 }) => {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'copied' | 'error' | false>(false);
 
   if (!data) {
     return (
@@ -26,9 +27,9 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
   const jsonString = JSON.stringify(data, null, 2);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(jsonString);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const ok = await copyToClipboard(jsonString);
+    setCopied(ok ? 'copied' : 'error');
+    setTimeout(() => setCopied(false), ok ? 2000 : 3000);
   };
 
   // 简单的语法高亮
@@ -74,7 +75,7 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
           bg-slate-700 hover:bg-slate-600 text-gray-300
           transition-colors z-10"
       >
-        {copied ? '已复制!' : '复制'}
+        {copied === 'copied' ? '已复制!' : copied === 'error' ? '失败' : '复制'}
       </button>
 
       {/* JSON 内容 */}

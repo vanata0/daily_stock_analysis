@@ -15,6 +15,7 @@ import { ReportSummary } from '../components/report/ReportSummary';
 import { TaskPanel } from '../components/tasks';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
 import type { SetupStatusResponse } from '../types/systemConfig';
+import { copyToClipboard } from '../utils/clipboard';
 import { getReportText, normalizeReportLanguage } from '../utils/reportLanguage';
 
 type MarketReviewNotice = {
@@ -31,7 +32,7 @@ const HomePage: React.FC = () => {
   const [marketReviewNotice, setMarketReviewNotice] = useState<MarketReviewNotice>(null);
   const [marketReviewError, setMarketReviewError] = useState<ParsedApiError | null>(null);
   const [marketReviewReport, setMarketReviewReport] = useState<string | null>(null);
-  const [marketReviewReportCopied, setMarketReviewReportCopied] = useState(false);
+  const [marketReviewReportCopied, setMarketReviewReportCopied] = useState<'copied' | 'error' | false>(false);
   const [analysisSkills, setAnalysisSkills] = useState<SkillInfo[]>([]);
   const [selectedStrategyId, setSelectedStrategyId] = useState('');
   const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
@@ -487,15 +488,10 @@ const HomePage: React.FC = () => {
       return;
     }
 
-    void navigator.clipboard.writeText(marketReviewReport).then(
-      () => {
-        setMarketReviewReportCopied(true);
-        setTimeout(() => setMarketReviewReportCopied(false), 2000);
-      },
-      (err) => {
-        console.error('复制失败:', err);
-      },
-    );
+    void copyToClipboard(marketReviewReport).then((ok) => {
+      setMarketReviewReportCopied(ok ? 'copied' : 'error');
+      setTimeout(() => setMarketReviewReportCopied(false), ok ? 2000 : 3000);
+    });
   }, [marketReviewReport]);
 
   const handleDeleteSelectedHistory = useCallback(() => {
@@ -763,10 +759,10 @@ const HomePage: React.FC = () => {
                   <button
                     type="button"
                     className="home-surface-button h-7 rounded-md px-3 py-1 text-xs text-foreground"
-                    disabled={marketReviewReportCopied}
+                    disabled={marketReviewReportCopied !== false}
                     onClick={() => void handleCopyMarketReviewReport()}
                   >
-                    {marketReviewReportCopied ? '已复制' : '复制'}
+                    {marketReviewReportCopied === 'copied' ? '已复制' : marketReviewReportCopied === 'error' ? '复制失败' : '复制'}
                   </button>
                 </div>
                 <pre

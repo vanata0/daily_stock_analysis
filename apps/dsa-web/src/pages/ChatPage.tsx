@@ -24,6 +24,7 @@ import {
   sanitizeFollowUpStockName,
 } from '../utils/chatFollowUp';
 import { isNearBottom } from '../utils/chatScroll';
+import { copyToClipboard } from '../utils/clipboard';
 import { getReportText } from '../utils/reportLanguage';
 
 // Quick question examples shown on empty state
@@ -430,8 +431,8 @@ const ChatPage: React.FC = () => {
   };
 
   const copyMessageToClipboard = async (msgId: string, content: string) => {
-    try {
-      await navigator.clipboard.writeText(content);
+    const ok = await copyToClipboard(content);
+    if (ok) {
       setCopiedMessages((prev) => new Set(prev).add(msgId));
       const existingTimer = copyResetTimerRef.current[msgId];
       if (existingTimer !== undefined) {
@@ -445,8 +446,8 @@ const ChatPage: React.FC = () => {
         });
         delete copyResetTimerRef.current[msgId];
       }, 2000);
-    } catch (err) {
-      console.error('Copy failed:', err);
+    } else {
+      showSendFeedback({ type: 'error', message: '复制失败，请手动选中文字后复制' }, 3000);
     }
   };
 

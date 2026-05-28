@@ -440,6 +440,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 15,
     },
+    "STOCK_INDEX_REMOTE_UPDATE_ENABLED": {
+        "title": "Remote Stock Index Updates",
+        "description": "Automatically refresh the local stock autocomplete index from the built-in GitHub main source.",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 16,
+        "help_key": "settings.data_source.stock_index_remote",
+        "examples": [
+            "STOCK_INDEX_REMOTE_UPDATE_ENABLED=true",
+            "STOCK_INDEX_REMOTE_UPDATE_ENABLED=false",
+        ],
+        "docs": [
+            {
+                "label": "Tushare 股票列表指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/TUSHARE_STOCK_LIST_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
     "REALTIME_SOURCE_PRIORITY": {
         "title": "Realtime Source Priority",
         "description": "Comma-separated priority for realtime quote providers.",

@@ -33,7 +33,7 @@ PR2 继续覆盖高频、易填错配置项：
 
 - AI 模型运行时：Agent 主模型、fallback 模型、高级 YAML 路由、temperature、provider API Key、OpenAI-compatible Base URL。
 - LLM Channels 编辑器内部字段：渠道名、协议、Base URL、API Key、模型列表、运行时能力检测、主模型、Agent 主模型、fallback、Vision 和 temperature。
-- 数据源与搜索：Tushare、实时行情优先级、实时技术指标、搜索 API Key、SearXNG、筹码分布、新闻窗口。
+- 数据源与搜索：Tushare、股票索引远程更新开关、实时行情优先级、实时技术指标、搜索 API Key、SearXNG、筹码分布、新闻窗口。
 - 通知：Webhook、Telegram、邮件、Discord/Slack 等聊天平台、报告输出、Webhook SSL 校验。
 - WebUI / auth / schedule / proxy：Host、Port、登录保护、可信反向代理、定时任务、交易日检查、网络代理。
 

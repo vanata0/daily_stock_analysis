@@ -168,6 +168,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响大盘复盘和市场统计增强数据的覆盖度。'],
     notes: ['不要在 issue、日志或截图中暴露真实 Key。'],
   },
+  'settings.data_source.stock_index_remote': {
+    title: '股票索引远程更新',
+    summary: '从 GitHub main 分支获取最新股票自动补全索引，并缓存到本地。',
+    usage: '默认开启；如运行环境无法访问 GitHub raw，可关闭开关。远程 URL、检查频率和超时时间均为系统内置值。',
+    valueNotes: ['系统默认 48 小时检查一次更新，避免频繁访问 GitHub。', '远程检查失败不会阻断 WebUI 或分析流程。'],
+    impact: ['影响 Web 自动补全和后端股票名称解析使用的股票简称新鲜度。'],
+    notes: ['远程下载失败时会继续使用已有缓存或随应用打包的内置索引。'],
+  },
   'settings.data_source.REALTIME_SOURCE_PRIORITY': {
     title: '实时行情源优先级',
     summary: '配置多个实时行情源的尝试顺序。',
@@ -996,6 +1004,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['This key is an optional enhancement, not required for the main analysis flow.'],
     impact: ['Affects market-review and market-statistics coverage.'],
     notes: ['Do not expose real keys in issues, logs, or screenshots.'],
+  },
+  'settings.data_source.stock_index_remote': {
+    title: 'Remote Stock Index',
+    summary: 'Fetches the latest stock autocomplete index from GitHub main and caches it locally.',
+    usage: 'Enabled by default. If GitHub raw is unreachable, disable it. The URL, check frequency, and timeout are built-in system values.',
+    valueNotes: ['The system checks for updates every 48 hours to avoid frequent GitHub access.', 'Remote check failures do not block WebUI or analysis.'],
+    impact: ['Affects stock-name freshness for Web autocomplete and backend stock-name resolution.'],
+    notes: ['When remote download fails, the app keeps using an existing cache or the bundled index.'],
   },
   'settings.data_source.REALTIME_SOURCE_PRIORITY': {
     title: 'Realtime Source Priority',

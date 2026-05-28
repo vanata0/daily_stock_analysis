@@ -129,11 +129,23 @@ python3 scripts/generate_index_from_csv.py --test  # 先测试
 python3 scripts/generate_index_from_csv.py         # 确认后生成
 ```
 
+### 本地客户端自动获取最新索引
+
+新版客户端默认会从项目 GitHub `main` 分支读取最新的 `apps/dsa-web/public/stocks.index.json`，并缓存到本地 `data/cache/stocks.index.json`。前端仍访问本地 `/stocks.index.json`，不需要直接跨域请求 GitHub。
+
+远程索引地址、检查频率和网络超时时间为系统内置值，不提供用户配置项；用户只需要决定是否启用：
+
+```bash
+STOCK_INDEX_REMOTE_UPDATE_ENABLED=true
+```
+
+默认开启时，系统最多每 48 小时检查一次更新。若运行环境无法访问 GitHub raw、请求超时、返回内容不是合法股票索引，应用会保留已有缓存；如果没有远程缓存，则继续使用随应用打包的内置索引。远程更新失败不会阻断 WebUI 启动、股票自动补全或分析流程；连续失败达到系统内置阈值后，会在本进程内暂停重试直到下一轮 48 小时窗口。
+
 ## 注意事项
 
 1. **积分要求**：确保账号积分足够（A股/港股2000，美股120试用）
 2. **请求限制**：注意 API 的每分钟请求次数限制
-3. **数据更新**：建议每月更新一次数据
+3. **数据更新**：维护者建议每三天刷新一次并提交到仓库；本地客户端默认最多每 48 小时检查一次 GitHub `main` 上的索引更新。后续可通过 GitHub Actions workflow 自动化刷新与提交 PR
 4. **网络连接**：需要稳定的网络连接
 
 ## 常见问题
@@ -155,7 +167,10 @@ python3 scripts/generate_index_from_csv.py         # 确认后生成
 4. 当前脚本不会自动重试；单次请求失败后会输出错误并结束，请排查原因后重新运行
 
 ### Q: 数据更新频率？
-**A**: 建议每月更新一次，或根据需求调整
+**A**: 对维护者本地 CSV 与仓库索引，建议每三天更新一次并提交到仓库；遇到摘帽/更名等高影响事件可临时刷新。未来可通过 GitHub Actions workflow 自动化刷新与提交 PR。对普通本地客户端，系统默认最多每 48 小时从 GitHub `main` 检查一次最新索引。
+
+### Q: 无法访问 GitHub raw 会影响使用吗？
+**A**: 不会。远程索引更新是 best-effort：失败时会继续使用已有远程缓存或随应用打包的内置索引；如果索引完全不可用，Web 自动补全会进入现有 fallback，股票代码仍可手动输入。
 
 ## 相关链接
 

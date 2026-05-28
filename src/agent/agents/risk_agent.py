@@ -29,10 +29,13 @@ logger = logging.getLogger(__name__)
 class RiskAgent(BaseAgent):
     agent_name = "risk"
     max_steps = 4
+    # Only keep get_realtime_quote for fresh PE/PB valuation checks.
+    # search_stock_news and get_stock_info are intentionally excluded:
+    # IntelAgent always runs before RiskAgent in full/specialist mode and
+    # saves its output to ctx.data["intel_opinion"] — re-fetching the same
+    # data would be redundant and roughly doubles API call count.
     tool_names = [
-        "search_stock_news",
         "get_realtime_quote",
-        "get_stock_info",
     ]
 
     def system_prompt(self, ctx: AgentContext) -> str:
@@ -84,11 +87,23 @@ from your search results. Do NOT invent risks.
         if ctx.stock_name:
             parts[0] += f" ({ctx.stock_name})"
         parts.append("for ALL risk factors listed in your instructions.")
-        parts.append("Search for latest news if you haven't received intel data yet.")
 
-        # Feed any existing intel data so the risk agent doesn't redo searches
-        if ctx.get_data("intel_opinion"):
-            parts.append(f"\n[Existing intel data]\n{json.dumps(ctx.get_data('intel_opinion'), ensure_ascii=False, default=str)}")
+        # Feed any existing intel data so the risk agent doesn't redo searches.
+        # In full/specialist pipeline, IntelAgent always runs first and stores
+        # its output here — re-fetching news would be pure duplicate API cost.
+        intel = ctx.get_data("intel_opinion")
+        if intel:
+            parts.append(
+                "\n[Pre-fetched intel data — DO NOT call search_stock_news or "
+                "get_stock_info again; derive your news/fundamentals risk flags "
+                "entirely from the data below]\n"
+                + json.dumps(intel, ensure_ascii=False, default=str)
+            )
+        else:
+            parts.append(
+                "No pre-fetched intel data available. "
+                "Use get_realtime_quote for valuation checks."
+            )
 
         return "\n".join(parts)
 

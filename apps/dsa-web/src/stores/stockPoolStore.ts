@@ -134,6 +134,10 @@ async function fetchHistory(
       const newItems = response.items.filter((item) => !existingIds.has(item.id));
       if (newItems.length > 0) {
         set({ historyItems: [...newItems, ...get().historyItems] });
+        // Auto-select the first new item when the panel is empty (task just completed)
+        if (!get().selectedReport) {
+          await get().selectHistoryItem(newItems[0].id);
+        }
       }
     } else if (reset) {
       set({
@@ -283,7 +287,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
       await historyApi.deleteRecords(recordIds);
 
       const deletedIds = new Set(recordIds);
-      const selectedWasDeleted = state.selectedReport?.meta.id !== undefined
+      const selectedWasDeleted = state.selectedReport?.meta.id != null
         && deletedIds.has(state.selectedReport.meta.id);
 
       set({ selectedHistoryIds: [] });

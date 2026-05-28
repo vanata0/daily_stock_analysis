@@ -320,7 +320,7 @@ const HomePage: React.FC = () => {
   );
 
   const handleAskFollowUp = useCallback(() => {
-    if (selectedReport?.meta.id === undefined || selectedReport.meta.reportType === 'market_review') {
+    if (selectedReport?.meta.id == null || selectedReport.meta.reportType === 'market_review') {
       return;
     }
 
@@ -791,7 +791,7 @@ const HomePage: React.FC = () => {
                   <Button
                     variant="home-action-ai"
                     size="sm"
-                    disabled={isAnalyzing || selectedReport.meta.id === undefined || isMarketReviewHistoryReport}
+                    disabled={isAnalyzing || selectedReport.meta.id == null || isMarketReviewHistoryReport}
                     onClick={handleReanalyze}
                   >
                     <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -802,7 +802,7 @@ const HomePage: React.FC = () => {
                   <Button
                     variant="home-action-ai"
                     size="sm"
-                    disabled={selectedReport.meta.id === undefined || isMarketReviewHistoryReport}
+                    disabled={selectedReport.meta.id == null || isMarketReviewHistoryReport}
                     onClick={handleAskFollowUp}
                   >
                     <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -813,7 +813,7 @@ const HomePage: React.FC = () => {
                   <Button
                     variant="home-action-ai"
                     size="sm"
-                    disabled={selectedReport.meta.id === undefined}
+                    disabled={selectedReport.meta.id == null}
                     onClick={openMarkdownDrawer}
                   >
                     <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -842,7 +842,7 @@ const HomePage: React.FC = () => {
         </div>
       </div>
 
-      {markdownDrawerOpen && selectedReport?.meta.id ? (
+      {markdownDrawerOpen && selectedReport?.meta.id != null ? (
         <ReportMarkdownDrawer
           key={selectedReport.meta.id}
           recordId={selectedReport.meta.id}

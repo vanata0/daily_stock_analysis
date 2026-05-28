@@ -84,9 +84,15 @@ Return **only** a JSON object:
 """
 
     def build_user_message(self, ctx: AgentContext) -> str:
+        # Build stock label without "(unknown)" placeholder — the LLM may
+        # mistake the word "unknown" for the actual stock code when calling
+        # tools, causing all tool calls to use the wrong stock code.
+        stock_label = f"**{ctx.stock_code}**"
+        if ctx.stock_name:
+            stock_label += f" ({ctx.stock_name})"
         parts = [
-            f"Evaluate **{self.skill_id}** skill for stock "
-            f"**{ctx.stock_code}** ({ctx.stock_name or 'unknown'}).",
+            f"Evaluate **{self.skill_id}** skill for stock {stock_label}.",
+            f"IMPORTANT: Use `{ctx.stock_code}` as the `stock_code` parameter in ALL tool calls.",
         ]
         if ctx.opinions:
             for op in ctx.opinions:
@@ -98,6 +104,18 @@ Return **only** a JSON object:
                         parts.append(
                             f"Technical data: {json.dumps(op.raw_data, ensure_ascii=False, default=str)[:2000]}"
                         )
+
+        # Inject pre-fetched intel data (news + fundamentals) from IntelAgent so
+        # SkillAgents don't call search_stock_news / get_stock_info redundantly.
+        intel = ctx.get_data("intel_opinion")
+        if intel:
+            intel_summary = json.dumps(intel, ensure_ascii=False, default=str)[:2500]
+            parts.append(
+                "\n[Pre-fetched intel data from IntelAgent — DO NOT call "
+                "search_stock_news or get_stock_info; derive news/fundamentals "
+                "context from the data below instead]\n" + intel_summary
+            )
+
         return "\n".join(parts)
 
     def post_process(self, ctx: AgentContext, raw_text: str) -> Optional[AgentOpinion]:

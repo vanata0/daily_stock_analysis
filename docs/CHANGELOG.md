@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Docker 默认部署移除 `.env` 单文件挂载，避免 WebUI 保存配置时因 `os.replace` 更新挂载点触发 `Device or resource busy`。
 - [修复] 收敛 #1391 Phase 0 A 股代码归属边界：补齐 `SH`/`SZ` 前缀场景的归属一致性，明确 `data_provider/baostock_fetcher.py`、`data_provider/pytdx_fetcher.py`、`data_provider/tushare_fetcher.py` 的本轮修复范围。
 - [改进] Web 完整报告 Markdown 抽屉改为按需加载。
+- [修复] SkillAgent 用户消息中移除 `(unknown)` 股票名称占位符，并增加明确的 stock_code 工具调用指令，避免 LLM 误将 unknown 当作股票代码导致技能评估返回 `strong_sell confidence=0.00`（用户可见为 `unknown/****`）。
+- [修复] 首页：分析任务完成后自动选中最新报告（SSE 任务完成 → silent refreshHistory 新增 auto-select 逻辑）。
+- [修复] 首页：完整分析报告按钮及抽屉渲染统一使用 `== null` 判断，修复 `meta.id` 为 null 时按钮可点但抽屉不挂载的问题。
 - [改进] 新增市场阶段推断基线并明确盘前、盘中、午休、临近收盘、盘后和非交易日语义。
 - [新功能] 告警中心新增 P7 大盘红绿灯结构化规则，支持 `market_light_status` 与 `market_light_score_drop` 并复用现有 worker、触发历史、通知和冷却链路。
 - [修复] 修复 `STOCK_LIST` 使用裸 A 股代码时 Baostock 等数据源 fallback 的内部格式转换，保持用户配置继续使用 6 位股票编号。
@@ -44,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 修正 Web 设置帮助中 legacy 告警 JSON 字段名与静默时段投递语义说明。
 - [修复] 修复 Web 中文设置页在数据源、通知、系统与 Agent 区域的配置标题、说明和关键下拉选项漏翻问题。
 - [修复] 修复问股会话切换和首页任务重连后可能残留 Agent/分析任务进行中状态的问题。
+- [改进] 多 Agent 流水线去除重复工具调用：RiskAgent 的 `tool_names` 移除 `search_stock_news` 与 `get_stock_info`（IntelAgent 已预取并写入 `intel_opinion`），并强化 `build_user_message` 禁止重复抓取指令；SkillAgent `build_user_message` 注入 `intel_opinion` 上下文并明确要求跳过 `search_stock_news`/`get_stock_info`，消除多 Agent 模式下同类数据被重复请求 6-8 次的问题。
 - [新功能] 问股新增默认关闭的可见对话上下文压缩，支持 Web 开关、Agent 高级 preset、滚动摘要和最近轮次原文保护，降低长会话 token 消耗。
 - [改进] P2-min：LLM Prompt 注入市场阶段上下文。
 - [修复] 问股 single-agent 新增 provider-aware trace 分轨，跨轮保留 DeepSeek V4 thinking + tool-call 的 `reasoning_content` 与工具协议材料。

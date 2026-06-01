@@ -2510,6 +2510,7 @@ class GeminiAnalyzer:
         news_context: Optional[str] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
         stream_progress_callback: Optional[Callable[[int], None]] = None,
+        analysis_context_pack_summary: Optional[str] = None,
     ) -> AnalysisResult:
         """
         分析单只股票
@@ -2576,7 +2577,13 @@ class GeminiAnalyzer:
         
         try:
             # 格式化输入（包含技术面数据和新闻）
-            prompt = self._format_prompt(context, name, news_context, report_language=report_language)
+            prompt = self._format_prompt(
+                context,
+                name,
+                news_context,
+                report_language=report_language,
+                analysis_context_pack_summary=analysis_context_pack_summary,
+            )
             
             config = self._get_runtime_config()
             model_name = config.litellm_model or "unknown"
@@ -2712,6 +2719,7 @@ class GeminiAnalyzer:
         name: str,
         news_context: Optional[str] = None,
         report_language: str = "zh",
+        analysis_context_pack_summary: Optional[str] = None,
     ) -> str:
         """
         格式化分析提示词（决策仪表盘 v2.0）
@@ -2752,6 +2760,8 @@ class GeminiAnalyzer:
             context.get("market_phase_context"),
             report_language=report_language,
         )
+        if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
+            prompt += analysis_context_pack_summary
         prompt += """
 
 ## 📈 技术面数据

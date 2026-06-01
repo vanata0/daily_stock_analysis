@@ -320,7 +320,7 @@ def test_changelog_mentions_alert_p6_release_note() -> None:
 def test_changelog_mentions_alert_p8_docs_closeout() -> None:
     changelog = (PROJECT_ROOT / "docs" / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    assert "[文档] 补齐告警中心 P8 文档与配置收口说明" in changelog
+    assert "补齐告警中心 P8 文档与配置收口说明" in changelog
     assert "GitHub Actions 与 Desktop 边界" in changelog
 
 

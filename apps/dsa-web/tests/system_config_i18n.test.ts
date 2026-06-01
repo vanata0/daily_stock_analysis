@@ -3,6 +3,8 @@ import { getFieldDescriptionZh, getFieldOptionLabelZh, getFieldTitleZh } from '.
 
 const requiredLocalizedKeys = [
   'TICKFLOW_API_KEY',
+  'STOCK_INDEX_REMOTE_UPDATE_ENABLED',
+  'SEARXNG_BASE_URLS',
   'ENABLE_REALTIME_QUOTE',
   'ENABLE_CHIP_DISTRIBUTION',
   'PYTDX_HOST',
@@ -12,6 +14,8 @@ const requiredLocalizedKeys = [
   'TELEGRAM_BOT_TOKEN',
   'TELEGRAM_CHAT_ID',
   'TELEGRAM_MESSAGE_THREAD_ID',
+  'FEISHU_STREAM_ENABLED',
+  'DINGTALK_STREAM_ENABLED',
   'EMAIL_SENDER',
   'EMAIL_PASSWORD',
   'EMAIL_RECEIVERS',
@@ -52,6 +56,9 @@ const requiredLocalizedKeys = [
   'SCHEDULE_RUN_IMMEDIATELY',
   'TRADING_DAY_CHECK_ENABLED',
   'WEBUI_HOST',
+  'LOG_DIR',
+  'WEBUI_ENABLED',
+  'WEBUI_AUTO_BUILD',
   'ADMIN_AUTH_ENABLED',
   'TRUST_X_FORWARDED_FOR',
   'RUN_IMMEDIATELY',
@@ -73,6 +80,13 @@ describe('systemConfigI18n required key coverage', () => {
       expect(getFieldTitleZh(key, key)).not.toBe(key);
       expect(getFieldDescriptionZh(key, 'schema fallback description')).not.toBe('schema fallback description');
     });
+  });
+
+  it('uses a Chinese primary title for SearXNG base URLs', () => {
+    const title = getFieldTitleZh('SEARXNG_BASE_URLS', 'SEARXNG_BASE_URLS');
+
+    expect(title).toBe('SearXNG 自建实例地址');
+    expect(title).not.toBe('SearXNG Base URLs');
   });
 });
 

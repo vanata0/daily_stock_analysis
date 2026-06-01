@@ -627,11 +627,45 @@ P1a constructs and passes an internal `market_phase_context` through the regular
 
 P1a itself does not change prompt wording, API/Web/Bot parameters, report schemas, stable history/task-status metadata, or quote freshness/data quality semantics. Regular history snapshots and Agent history snapshots strip this runtime-only field. P1b is left to define persistent metadata and task-status display contracts.
 
+### Market Phase Low-Sensitivity Metadata (Issue #1386 P1b)
+
+P1b projects the P1a runtime `market_phase_context` into a stable, low-sensitivity, public `market_phase_summary` and stores it at the top level of `analysis_history.context_snapshot`. History detail, sync analysis responses, and completed `/api/v1/analysis/status/{task_id}` responses return the same market-phase metadata at `report.meta.market_phase_summary`; completed task status does not add a top-level `TaskStatus` field and only exposes it through `status.result.report.meta.market_phase_summary`.
+
+`market_phase_summary` only contains market, phase, market-local time, session date, effective daily-bar date, trading-day / market-open / partial-bar flags, open/close minute estimates, trigger source, analysis intent, and warning codes. It does not expose the full `market_phase_context`, and it does not add quote freshness, fallback, stale, or data-quality scoring fields. `report.details.analysis_context_pack_overview` remains the #1389 input data-block quality overview. API `details.context_snapshot` strips the top-level `market_phase_summary` and `analysis_context_pack_overview` so raw snapshots do not duplicate these stable public fields. When `SAVE_CONTEXT_SNAPSHOT=false` or older history records lack the summary, the field is empty and the report still loads.
+
+P1b does not change prompts, does not add an `analysis_phase` request parameter, does not add Web phase labels or rendering, and does not cover pending/processing TaskPanel state, in-progress SSE events, Bot, notifications, `market_review`, or P3 intraday data-quality fields.
+
 ### Market Phase Prompt Injection (Issue #1386 P2-min)
 
 P2-min starts rendering the runtime market phase into an LLM-readable prompt section for analysis paths that already receive `market_phase_context`. Regular analysis, single Agent, and multi-agent prompts can now see the current phase, market-local time, latest reusable complete daily-bar date, and the minimal phase constraints: pre-market runs must not describe today's price action as already happened, intraday / lunch-break / near-close runs must treat the latest daily bar as potentially unfinished, post-market runs can keep the complete-session recap style, and non-trading or unknown phases should stay conservative.
 
 P2-min still does not add API/Web/Bot parameters, persist phase into history/task status/report metadata, change report JSON schemas, or introduce the full quote freshness, fallback, stale, or data-quality contract. Bot/API direct Agent entrypoints that do not go through the P1a pipeline to build `market_phase_context` keep their previous behavior; entrypoint propagation and visible labels are left to later P4+ work.
+
+### Intraday Data Packet and Realtime Quality Control (Issue #1386 P3)
+
+P3 adds realtime quote quality metadata for the regular analysis path, but still does not add an `analysis_phase` parameter, change API/Web/Bot phase entrypoints, change report JSON schemas, or implement #1389 P5 data-quality scoring or model confidence limits. Realtime quotes may carry `fetched_at`, `provider_timestamp`, `is_stale`, `stale_seconds`, and `fallback_from`; `fetched_at` is the system fetch time, while `provider_timestamp` is only populated when the provider actually returns a quote timestamp. If provider time is unavailable, the system does not fabricate freshness, and `stale_seconds` / `is_stale` stay empty.
+
+Whole-source fallback semantics are fixed: `source` keeps the actual successful provider token, while `fallback_from` records the highest-priority whole source that failed in the current attempt; if the primary source succeeds and later providers only supplement missing fields, `fallback_from` is not set. `AnalysisContextBuilder` only maps these upstream artifacts, performs no extra fetches, and does no quality scoring; quote block status collapses as `STALE > FALLBACK > AVAILABLE`. When realtime price overlays `today`, the pipeline marks `is_partial_bar`, `is_estimated`, `estimated_fields`, `realtime_source`, and quote metadata. The `daily_bars` block still represents the complete daily-bar window in storage; partial/estimated markers only enter the technical block. Freshness scoring, intraday cache TTL tiers, Agent tool-level reuse, and API/Web display remain follow-ups.
+
+### AnalysisContextPack Prompt Summary (Issue #1389 P3)
+
+P3 injects a low-sensitivity `AnalysisContextPack` summary into regular analysis and Agent initial prompts. The pipeline builds the pack from already-fetched quote, daily-bar, trend, chip, fundamentals, news, and market-phase artifacts, then passes `analysis_context_pack_summary` downstream; in this new pack-summary section, the LLM only sees subject, version, data-block status/source/warnings/missing reason, and news result count, not full `news.content`, `trend_result`, chip, or fundamentals raw payloads through that section. Existing `news_context`, Agent pre-fetched JSON, and `enhanced_context` raw-payload channels keep their pre-P3 behavior and are not replaced or sanitized by this summary.
+
+P3 itself did not add API/Web/Bot parameters, persist fields into history/task status/report metadata, change report JSON schemas, or expose the full pack through history, notifications, or Web surfaces. Agent tool-level reuse of pack data and P5 data-quality scoring are left to later phases.
+
+### AnalysisContextPack Low-Sensitivity Visibility (Issue #1389 P4)
+
+P4 adds `report.details.analysis_context_pack_overview`. History detail, sync analysis responses, and completed `/api/v1/analysis/status/{task_id}` responses now return the same low-sensitivity overview; the Web report page renders a collapsed data-block summary after Strategy and News, with available/missing counts, non-zero other status counts, and trigger source in the header and data-block status, source, warnings, missing reasons, status counts, and news result count after expansion. API `details.context_snapshot` strips the top-level `analysis_context_pack_overview` so the raw snapshot panel does not duplicate the public overview.
+
+The overview does not include the full pack, the `analysis_context_pack_summary` prompt string, `items.value`, news body text, `trend_result`, chip, or fundamentals raw payloads. When `SAVE_CONTEXT_SNAPSHOT=false` or older history records lack the overview, the field is empty and the report still loads. This phase does not cover pending/processing TaskPanel, in-progress SSE events, notification summaries, Bot/Desktop-specific rendering, `market_review` overview, or data-quality scoring.
+
+### AnalysisContextPack Data Quality Scoring and Prompt Limitations (Issue #1389 P5)
+
+P5 adds lightweight data-quality scoring and model-readable data limitations to `AnalysisContextPack` without changing `PACK_VERSION = "1.0"`, adding data sources, or changing the report JSON schema. `ContextFieldStatus` now includes `fetch_failed`, which only means a field or data block explicitly failed to fetch in this run; the first mapping only turns `fundamental_context.status == "failed"` into `fetch_failed`, while empty news, unconfigured search, missing realtime quote, or missing chip data keep the existing `missing` / `not_supported` semantics.
+
+`DataQuality` now contains `overall_score`, `level`, `block_scores`, and `limitations`, while preserving the old `warnings` / `metadata` fields. Scoring is fixed to six blocks: `quote`, `daily_bars`, `technical`, `news`, `fundamentals`, and `chip`; auxiliary missing blocks are not re-normalized away. When core blocks are degraded, the prompt's `Data Limitations` section tells the model not to return high confidence; missing auxiliary blocks only constrain their matching analysis sections and must not be interpreted as bullish or bearish. The section is generated by `format_analysis_context_pack_prompt_section()`, so regular analysis, single Agent, and multi-agent paths reuse the same low-sensitivity summary without exposing raw payloads, news body text, raw trend values, secrets, tokens, or webhooks.
+
+History detail, sync analysis responses, and completed task status responses still expose only `report.details.analysis_context_pack_overview`; P5 only adds a nested `data_quality` object with score, level, block_scores, and limitations, and does not duplicate `warnings`. The Web report page remains collapsed by default, adds quality score/level to the header, and shows limitations plus `fetch_failed` status after expansion; API `details.context_snapshot` continues to strip the top-level `analysis_context_pack_overview`.
 
 ---
 
@@ -894,7 +928,10 @@ System defaults to AkShare (free), also supports other data sources:
 
 ### Longbridge
 - Optional fallback for US/HK stocks, mainly used to supplement fields that YFinance may miss
-- Configure `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, and `LONGBRIDGE_ACCESS_TOKEN`
+- New integrations should use Longbridge OAuth 2.0: the client id is read from `LONGBRIDGE_OAUTH_CLIENT_ID`, or from `LONGBRIDGE_APP_KEY` when no Legacy Access Token is configured; run `python scripts/generate_longbridge_oauth_token.py --client-id <client_id>` once on an interactive machine to generate the SDK token cache
+- For GitHub Actions / Docker headless runs, base64 the local `~/.longbridge/openapi/tokens/<client_id>` file and store it as `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`
+- OAuth runtime support requires SDK APIs `OAuthBuilder` and `Config.from_oauth`; if a Linux/Docker environment can only install the older SDK, the app logs a clear warning and skips Longbridge while keeping YFinance / AkShare fallback available
+- Legacy API Key remains supported with `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, and `LONGBRIDGE_ACCESS_TOKEN`; this Access Token is the legacy API-key credential, not an OAuth access token
 - Optional knobs: `LONGBRIDGE_STATIC_INFO_TTL_SECONDS` (default `86400`) and `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` (default `15`)
 - If credentials are absent, the optional Longbridge fetcher is not instantiated
 - When runtime errors such as `client is closed`, `context closed`, or `connection closed` occur, Longbridge enters a short cooldown window and US/HK daily or realtime requests automatically fall back to YFinance / AkShare instead of reconnecting on every request
@@ -1059,6 +1096,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 - **Real-time Progress** - Analysis task status updates in real-time, supports parallel tasks; the regular stock-analysis path now prefers LiteLLM streaming during the LLM stage and pushes finer-grained `message/progress` updates through task SSE
 - **Market Review visibility** - After clicking Market Review, the API returns a `task_id` and the UI polls `GET /api/v1/analysis/status/{task_id}` to show progress; completed/failure states are rendered explicitly and failure messages are shown directly in the UI error area.
 - **Market review history replay** - Market review results are persisted with `report_type=market_review` and can be reopened from history list/detail or Markdown endpoints directly, without re-triggering a fresh analysis run.
+- **Input data-block visibility** - Regular analysis reports expose a low-sensitivity `AnalysisContextPack` overview through history details, sync responses, and completed task status; the Web report page shows the data-block summary collapsed after Strategy and News, with block status, source, missing reasons, and fallback summaries available on expansion.
 - **Backtest Validation** - Evaluate historical analysis accuracy, query direction win rate and simulated returns
 - **API Documentation** - Visit `/docs` for Swagger UI
 
@@ -1089,6 +1127,9 @@ FastAPI provides RESTful API service for configuration management and triggering
 > Note: Once `/api/v1/analysis/market-review` completes, the report is persisted with `report_type=market_review`; open `/api/v1/history` and `/api/v1/history/{record_id}` (or Markdown history endpoints) to view it directly without re-running analysis.
 > Note: when `/api/v1/analysis/market-review` returns a `task_id`, the WebUI polls `GET /api/v1/analysis/status/{task_id}`. The UI renders clear `pending/processing` progress, shows completion feedback when status becomes `completed`, and surfaces `error` content on `failed`.
 > Note: `GET /api/v1/history/{record_id}/diagnostics` accepts either the history primary key ID or `query_id`, and returns a `normal/degraded/failed/unknown` summary, key pipeline components, and sanitized `copy_text`. Older reports without `context_snapshot.diagnostics` return `unknown` without affecting normal report reads.
+> Note: `GET /api/v1/history` list summaries can be paginated by `stock_code` for same-stock history and now include optional trend, summary, model, and analysis-time price/change fields. Older rows without persisted snapshots return empty values. The Web report page's "History Trend" drawer reuses this endpoint.
+> Issue #1520 compatibility note: The `model`/`model_used` returned here is read-only historical snapshot metadata from each record, used only for trend drawer/history display. It does not alter runtime model/model-provider/base URL resolution, config migration, or cleanup semantics in the analysis path. Rollback is by reverting this commit; history query, API response shapes, and UI drawer consumption remain compatible.
+> Note: history detail, sync analysis responses, and completed task status responses expose a low-sensitivity input data-block overview at `report.details.analysis_context_pack_overview`; `details.context_snapshot` strips that top-level field and does not return the full `AnalysisContextPack` or prompt summary.
 
 > Compatibility audit evidence:
 > - Official references: LiteLLM OpenAI-compatible provider documentation <https://docs.litellm.ai/docs/providers/openai_compatible>, OpenAI Chat API <https://platform.openai.com/docs/api-reference/chat/create>, and DeepSeek API docs <https://api-docs.deepseek.com/>.

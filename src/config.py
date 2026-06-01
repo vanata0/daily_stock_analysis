@@ -35,6 +35,10 @@ from src.llm import generation_params as llm_generation_params
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_ALPHASIFT_INSTALL_SPEC = (
+    "git+https://github.com/ZhuLinsen/alphasift.git@b2ca66dd47001b9a09890cfe21c2b18c7219ccf5"
+)
+
 
 @dataclass
 class ConfigIssue:
@@ -625,7 +629,12 @@ class Config:
     longbridge_app_key: Optional[str] = None
     longbridge_app_secret: Optional[str] = None
     longbridge_access_token: Optional[str] = None
+    longbridge_oauth_client_id: Optional[str] = None
     stock_index_remote_update_enabled: bool = True
+
+    # === AlphaSift optional stock screening integration ===
+    alphasift_enabled: bool = False
+    alphasift_install_spec: str = DEFAULT_ALPHASIFT_INSTALL_SPEC
 
     # === AI 分析配置 ===
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
@@ -1238,6 +1247,7 @@ class Config:
             longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,
             longbridge_app_secret=os.getenv('LONGBRIDGE_APP_SECRET') or None,
             longbridge_access_token=os.getenv('LONGBRIDGE_ACCESS_TOKEN') or None,
+            longbridge_oauth_client_id=os.getenv('LONGBRIDGE_OAUTH_CLIENT_ID') or None,
             stock_index_remote_update_enabled=parse_env_bool(
                 os.getenv('STOCK_INDEX_REMOTE_UPDATE_ENABLED'),
                 default=True,
@@ -1479,7 +1489,13 @@ class Config:
                 field_name='PORTFOLIO_RISK_LOOKBACK_DAYS',
                 minimum=1,
             ),
-            portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true'
+            portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true',
+            alphasift_enabled=parse_env_bool(os.getenv('ALPHASIFT_ENABLED'), default=False),
+            alphasift_install_spec=(
+                DEFAULT_ALPHASIFT_INSTALL_SPEC
+                if os.getenv('ALPHASIFT_INSTALL_SPEC') is None
+                else os.getenv('ALPHASIFT_INSTALL_SPEC', '').strip()
+            ),
         )
     
     @classmethod

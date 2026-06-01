@@ -763,6 +763,10 @@ class AgentExecutor:
             if market_phase_section:
                 parts.append(market_phase_section)
 
+            analysis_context_pack_summary = context.get("analysis_context_pack_summary")
+            if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
+                parts.append(analysis_context_pack_summary)
+
             # Inject pre-fetched context data to avoid redundant fetches
             if context.get("realtime_quote"):
                 parts.append(f"\n[系统已获取的实时行情]\n{json.dumps(context['realtime_quote'], ensure_ascii=False)}")

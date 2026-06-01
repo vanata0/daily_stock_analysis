@@ -179,6 +179,10 @@ class BaseAgent(ABC):
         if market_phase_section:
             messages.append({"role": "user", "content": market_phase_section})
 
+        analysis_context_pack_summary = ctx.meta.get("analysis_context_pack_summary")
+        if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
+            messages.append({"role": "user", "content": analysis_context_pack_summary})
+
         # Inject pre-fetched data as a synthetic assistant context
         cached_data = self._inject_cached_data(ctx)
         if cached_data:

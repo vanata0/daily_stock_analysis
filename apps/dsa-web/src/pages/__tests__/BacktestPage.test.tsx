@@ -97,15 +97,18 @@ describe('BacktestPage', () => {
     expect(windowInput).toHaveClass('input-surface');
     expect(windowInput).toHaveClass('input-focus-glow');
 
-    expect(await screen.findByText('赢')).toBeInTheDocument();
+    expect(await screen.findByText('盈利')).toBeInTheDocument();
     expect(screen.getByText('已完成')).toBeInTheDocument();
     expect(screen.getByText('600519')).toBeInTheDocument();
     expect(screen.getByText('贵州茅台')).toBeInTheDocument();
     expect(screen.getByText('震荡偏多')).toBeInTheDocument();
-    expect(screen.getByText('涨')).toBeInTheDocument();
+    expect(screen.getByText('上涨')).toBeInTheDocument();
     expect(screen.getByText('窗口收益')).toBeInTheDocument();
     expect(screen.getByText('方向匹配')).toBeInTheDocument();
+    expect(screen.getByText('做多')).toBeInTheDocument();
     expect(screen.getAllByLabelText('是').length).toBeGreaterThan(0);
+    expect(screen.getByText('方向准确率')).toBeInTheDocument();
+    expect(screen.getByText('平均模拟收益')).toBeInTheDocument();
   });
 
   it('filters results with stock code, window, and analysis date range when clicking Filter', async () => {
@@ -113,8 +116,8 @@ describe('BacktestPage', () => {
 
     const filterInput = await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
     const windowInput = screen.getByPlaceholderText('10');
-    const fromInput = screen.getByLabelText('分析起始日期');
-    const toInput = screen.getByLabelText('分析截止日期');
+    const fromInput = screen.getByLabelText('分析开始日期');
+    const toInput = screen.getByLabelText('分析结束日期');
 
     fireEvent.change(filterInput, { target: { value: 'aapl' } });
     fireEvent.change(windowInput, { target: { value: '20' } });
@@ -182,7 +185,7 @@ describe('BacktestPage', () => {
     render(<BacktestPage />);
 
     await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
-    fireEvent.click(screen.getByRole('button', { name: '1日验证' }));
+    fireEvent.click(screen.getByRole('button', { name: '1 日验证' }));
 
     await waitFor(() => {
       expect(mockGetResults).toHaveBeenLastCalledWith({
@@ -200,8 +203,8 @@ describe('BacktestPage', () => {
       });
     });
 
-    expect(screen.getByText('实际走势')).toBeInTheDocument();
-    expect(screen.getByText('准确率')).toBeInTheDocument();
-    expect(screen.getByText('次日验证模式：将AI预测与下一交易日收盘价对比。')).toBeInTheDocument();
+    expect(screen.getByText('实际表现')).toBeInTheDocument();
+    expect(screen.getByText('准确性')).toBeInTheDocument();
+    expect(screen.getByText('1 日验证模式会用下一个交易日收盘表现校验 AI 预测。')).toBeInTheDocument();
   });
 });

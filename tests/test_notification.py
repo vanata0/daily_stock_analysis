@@ -33,6 +33,7 @@ from src.config import Config
 from src.notification import NotificationService, NotificationChannel
 from src.notification_noise import reset_notification_noise_state
 from src.analyzer import AnalysisResult
+from bot.models import BotMessage, ChatType
 import requests
 
 
@@ -47,6 +48,46 @@ def _make_response(status_code: int, json: Optional[dict] = None) -> requests.Re
     if json:
         response.json = lambda: json
     return response
+
+
+def _make_feishu_message() -> BotMessage:
+    return BotMessage(
+        platform="feishu",
+        message_id="msg-1",
+        user_id="user-1",
+        user_name="tester",
+        chat_id="chat-1",
+        chat_type=ChatType.GROUP,
+        content="/a 600519",
+    )
+
+
+def _make_dingtalk_message() -> BotMessage:
+    return BotMessage(
+        platform="dingtalk",
+        message_id="msg-2",
+        user_id="user-2",
+        user_name="tester",
+        chat_id="dingtalk-chat",
+        chat_type=ChatType.GROUP,
+        content="/a 600519",
+        raw_data={
+            "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?session=abc123",
+        },
+    )
+
+
+def _make_telegram_message() -> BotMessage:
+    return BotMessage(
+        platform="telegram",
+        message_id="msg-3",
+        user_id="user-3",
+        user_name="tester",
+        chat_id="100200300",
+        chat_type=ChatType.PRIVATE,
+        content="/a 600519",
+        raw_data={"chat_id": "100200300"},
+    )
 
 
 class TestNotificationServiceSendToMethods(unittest.TestCase):
@@ -274,6 +315,106 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         self.assertTrue(ok)
         mock_context.assert_called_once_with("content")
         mock_custom.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_context_response_skips_static_webhook(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            feishu_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test-token",
+            feishu_app_id="cli_test",
+            feishu_app_secret="app-secret",
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService(source_message=_make_feishu_message())
+
+        with mock.patch.object(service, "_send_feishu_stream_reply", return_value=True) as mock_reply, \
+             mock.patch.object(service, "send_to_feishu", return_value=True) as mock_webhook:
+            result = service.send_with_results("content", route_type="report")
+
+        self.assertTrue(result.dispatched)
+        self.assertTrue(result.success)
+        self.assertEqual(result.status, "sent")
+        self.assertEqual([item.channel for item in result.channel_results], ["__context__"])
+        mock_reply.assert_called_once_with("chat-1", "content")
+        mock_webhook.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_context_failure_does_not_fallback_to_static_webhook(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            feishu_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test-token",
+            feishu_app_id="cli_test",
+            feishu_app_secret="app-secret",
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService(source_message=_make_feishu_message())
+
+        with mock.patch.object(service, "_send_feishu_stream_reply", return_value=False), \
+             mock.patch.object(service, "send_to_feishu", return_value=True) as mock_webhook:
+            result = service.send_with_results("content", route_type="report")
+
+        self.assertTrue(result.dispatched)
+        self.assertFalse(result.success)
+        self.assertEqual(result.status, "all_failed")
+        self.assertEqual([item.channel for item in result.channel_results], ["__context__"])
+        mock_webhook.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_dingtalk_context_response_skips_static_webhook(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            feishu_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test-token",
+            dingtalk_app_key="dingtalk-key",
+            dingtalk_app_secret="dingtalk-secret",
+            wechat_webhook_url="https://wechat.example/hook",
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService(source_message=_make_dingtalk_message())
+
+        with mock.patch.object(service, "_send_dingtalk_chunked", return_value=True) as mock_dingtalk, \
+             mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat:
+            result = service.send_with_results("content", route_type="report")
+
+        self.assertTrue(result.dispatched)
+        self.assertTrue(result.success)
+        self.assertEqual([item.channel for item in result.channel_results], ["__context__"])
+        mock_dingtalk.assert_called_once_with("https://oapi.dingtalk.com/robot/sendBySession?session=abc123", "content", max_bytes=20000)
+        mock_wechat.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_telegram_context_response_skips_static_webhook(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            telegram_bot_token="TOKEN",
+            telegram_chat_id="123456",
+            wechat_webhook_url="https://wechat.example/hook",
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService(source_message=_make_telegram_message())
+
+        with mock.patch.object(service, "send_to_telegram", return_value=True) as mock_telegram, \
+             mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat:
+            result = service.send_with_results("content", route_type="report")
+
+        self.assertTrue(result.dispatched)
+        self.assertTrue(result.success)
+        self.assertEqual([item.channel for item in result.channel_results], ["__context__"])
+        mock_telegram.assert_called_once_with("content", chat_id="100200300")
+        mock_wechat.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_webhook_still_sends_without_source_context(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            feishu_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test-token",
+            feishu_app_id="cli_test",
+            feishu_app_secret="app-secret",
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_webhook:
+            result = service.send_with_results("content", route_type="report")
+
+        self.assertTrue(result.dispatched)
+        self.assertTrue(result.success)
+        self.assertEqual([item.channel for item in result.channel_results], ["feishu"])
+        mock_webhook.assert_called_once_with("content")
 
     @mock.patch("src.notification.get_config")
     def test_send_dedup_suppresses_static_channels_after_success(self, mock_get_config: mock.MagicMock):
@@ -891,6 +1032,39 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertNotIn("板块涨跌幅", out)
         # And no leftover "--" cells either.
         self.assertNotIn("| -- | -- |", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_related_boards_without_type_renders_one_line(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+        result.fundamental_context = {
+            "earnings": {"status": "ok", "data": {}},
+            "growth": {"status": "ok", "data": {}},
+            "belong_boards": [
+                {"name": "白酒Ⅲ"},
+                {"name": "白酒Ⅱ"},
+                {"name": "食品饮料"},
+                {"name": "贵州板块"},
+                {"name": "酿酒概念"},
+            ],
+        }
+
+        out = service.generate_single_stock_report(result)
+
+        self.assertIn("关联板块", out)
+        self.assertIn("白酒Ⅲ / 白酒Ⅱ / 食品饮料 / 贵州板块 / 酿酒概念", out)
+        self.assertNotIn("| 板块 | 类型 |", out)
+        self.assertNotIn("| 白酒Ⅲ | N/A |", out)
 
     @mock.patch("src.notification.get_config")
     def test_related_boards_keeps_signal_columns_when_any_board_has_data(

@@ -28,8 +28,7 @@ import logging
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from threading import RLock
-from typing import Any, Optional
+from typing import Optional
 
 import pandas as pd
 
@@ -57,15 +56,17 @@ def _max_staleness_days() -> int:
 
 
 class ScreenerDBFetcher(BaseFetcher):
-    """本地 DuckDB 前复权日线 K 线数据源（最高优先级）。"""
+    """本地 DuckDB 前复权日线 K 线数据源（最高优先级）。
+
+    stock_new 持有 market.duckdb 的 exclusive write lock 时，每次查询都会
+    失败并降级到下一数据源（DuckDB 1.5.2 不允许跨进程的 read/write 混合）。
+    """
 
     name = "ScreenerDBFetcher"
     priority = int(os.getenv("SCREENER_DB_PRIORITY", "-1"))
 
     def __init__(self) -> None:
         self._db_path = _resolve_db_path()
-        self._con: Any = None
-        self._con_lock = RLock()
         self._available: Optional[bool] = None  # None = not yet checked
 
     # ------------------------------------------------------------------
@@ -94,32 +95,21 @@ class ScreenerDBFetcher(BaseFetcher):
         return True
 
     # ------------------------------------------------------------------
-    # Connection (singleton, read-only)
+    # Connection (per-query, read-only)
+    # stock_new 持有 write lock 时本类连接会失败并降级，
+    # 不持久持锁避免阻塞 stock_new 的写操作。
     # ------------------------------------------------------------------
 
-    def _get_con(self):
-        if self._con is not None:
-            return self._con
-        with self._con_lock:
-            if self._con is None:
-                import duckdb
-                self._con = duckdb.connect(self._db_path, read_only=True)
-        return self._con
+    def _open_con(self):
+        import duckdb
+        return duckdb.connect(self._db_path, read_only=True)
 
     def close(self) -> None:
-        with self._con_lock:
-            con, self._con = self._con, None
-        if con is not None:
-            try:
-                con.close()
-            except Exception:
-                pass
+        # 保留接口兼容性，已无持久连接需要关闭
+        pass
 
     def __del__(self) -> None:
-        try:
-            self.close()
-        except Exception:
-            pass
+        pass
 
     # ------------------------------------------------------------------
     # BaseFetcher implementation
@@ -138,10 +128,9 @@ class ScreenerDBFetcher(BaseFetcher):
             )
 
         try:
-            con = self._get_con()
+            con = self._open_con()
         except Exception as exc:
-            # DuckDB lock conflict (another process has the file open exclusively)
-            self._available = False
+            # DuckDB lock conflict (stock_new has the file open exclusively)
             raise DataFetchError(
                 f"ScreenerDBFetcher: 无法连接 DuckDB ({self._db_path}): {exc}"
             ) from exc
@@ -170,6 +159,11 @@ class ScreenerDBFetcher(BaseFetcher):
             raise DataFetchError(
                 f"ScreenerDBFetcher: DuckDB 查询失败 ({stock_code}): {exc}"
             ) from exc
+        finally:
+            try:
+                con.close()
+            except Exception:
+                pass
 
         if df is None or df.empty:
             raise DataFetchError(

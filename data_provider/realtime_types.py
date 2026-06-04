@@ -150,6 +150,10 @@ class UnifiedRealtimeQuote:
     total_mv: Optional[float] = None        # 总市值(元)
     circ_mv: Optional[float] = None         # 流通市值(元)
     
+    # === 盘口资金方向（仅腾讯直连接口有）===
+    outer_vol: Optional[int] = None         # 外盘量（主动买入，股）
+    inner_vol: Optional[int] = None         # 内盘量（主动卖出，股）
+
     # === 其他指标 ===
     change_60d: Optional[float] = None      # 60日涨跌幅(%)
     high_52w: Optional[float] = None        # 52周最高
@@ -170,6 +174,7 @@ class UnifiedRealtimeQuote:
             'volume_ratio', 'turnover_rate', 'amplitude',
             'open_price', 'high', 'low', 'pre_close',
             'pe_ratio', 'pb_ratio', 'total_mv', 'circ_mv',
+            'outer_vol', 'inner_vol',
             'change_60d', 'high_52w', 'low_52w'
         ]
         for f in optional_fields:

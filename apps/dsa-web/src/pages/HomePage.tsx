@@ -835,7 +835,7 @@ const HomePage: React.FC = () => {
                   <Button
                     variant="home-action-ai"
                     size="sm"
-                    disabled={selectedReport.meta.id === undefined || isMarketReviewHistoryReport}
+                    disabled={selectedReport.meta.id == null || isMarketReviewHistoryReport}
                     className={isHistoryTrendOpen ? 'border-primary/70 bg-primary/15 text-primary shadow-glow-cyan' : undefined}
                     onClick={() => {
                       if (isHistoryTrendOpen) {
@@ -851,7 +851,7 @@ const HomePage: React.FC = () => {
                   <Button
                     variant="home-action-ai"
                     size="sm"
-                    disabled={selectedReport.meta.id === undefined}
+                    disabled={selectedReport.meta.id == null}
                     onClick={openMarkdownDrawer}
                   >
                     <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

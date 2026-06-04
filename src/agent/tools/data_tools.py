@@ -635,7 +635,9 @@ def _handle_get_capital_flow(stock_code: str) -> dict:
     """Get main-force capital flow data for a stock."""
     manager = _get_fetcher_manager()
     try:
-        ctx = manager.get_capital_flow_context(stock_code)
+        # Pass an explicit budget so the Mairuiapi HTTP request (up to ~5s)
+        # is not killed by the 3s default fundamental_fetch_timeout_seconds.
+        ctx = manager.get_capital_flow_context(stock_code, budget_seconds=15.0)
     except Exception as exc:
         logger.warning("get_capital_flow failed for %s: %s", stock_code, exc)
         return {

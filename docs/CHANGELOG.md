@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- [改进] AlphaSift 选股入口在 Web 侧边栏中移动到“问股”下方，贴近 Agent/研究辅助工作流。
+- [新功能] 接入迈瑞数据（Mairuiapi）个股资金流向接口，支持特大/大/中/小单四档明细，作为东财 AkShare 的优先数据源；通过 `MAIRUI_API_KEY` 启用，未配置时自动 fallback 到原有东财接口。
+- [改进] AlphaSift 选股入口在 Web 侧边栏中移动到”问股”下方，贴近 Agent/研究辅助工作流。
 - [改进] Docker 镜像构建阶段预置默认 AlphaSift 适配层，与桌面发布包一样避免运行期额外安装。
 - [新功能] 新增默认关闭的 AlphaSift 选股页签，通过 `ALPHASIFT_ENABLED` 开启后经由稳定适配层读取策略并执行选股。
 - [改进] AlphaSift 选股改为依赖 `alphasift.dsa_adapter` 的稳定接口，Web 策略列表由 AlphaSift 动态提供，不再在前端硬编码。

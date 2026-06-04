@@ -96,7 +96,7 @@ export function useDashboardLifecycle({
       scheduleTaskRemoval(task.taskId, 5_000);
     },
     onError: () => {
-      console.warn('SSE connection disconnected, reconnecting...');
+      console.debug('[SSE] connection dropped, reconnecting...');
     },
     enabled,
   });

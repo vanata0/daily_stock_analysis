@@ -168,6 +168,17 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响大盘复盘和市场统计增强数据的覆盖度。'],
     notes: ['不要在 issue、日志或截图中暴露真实 Key。'],
   },
+  'settings.data_source.MAIRUI_API_KEY': {
+    title: '迈瑞数据 API Key',
+    summary: '接入迈瑞数据个股资金流向接口，提供特大单/大单/中单/小单四档主动买卖明细。',
+    usage: '在迈瑞数据官网获取 Key 后填入。配置后自动作为个股资金流的主数据源；未配置时降级到东财 AkShare 接口。',
+    valueNotes: [
+      '仅支持 A 股（沪深），港股和美股不受影响。',
+      '免费版每分钟 300 次，包月/包年版更高，日常分析不会触发限频。',
+    ],
+    impact: ['个股资金流分析数据来源：配置后取自迈瑞（含四档明细），未配置则取自东财（仅主力净流入）。'],
+    notes: ['不要在 issue、日志或截图中暴露真实 Key。'],
+  },
   'settings.data_source.stock_index_remote': {
     title: '股票索引远程更新',
     summary: '从 GitHub main 分支获取最新股票自动补全索引，并缓存到本地。',
@@ -1102,6 +1113,17 @@ const settingsHelpEnUS: SettingsHelpMap = {
     usage: 'Paste a TickFlow API key here. When empty, the system continues with other data sources and fallback paths.',
     valueNotes: ['This key is an optional enhancement, not required for the main analysis flow.'],
     impact: ['Affects market-review and market-statistics coverage.'],
+    notes: ['Do not expose real keys in issues, logs, or screenshots.'],
+  },
+  'settings.data_source.MAIRUI_API_KEY': {
+    title: 'Mairuiapi API Key',
+    summary: 'Enables Mairuiapi individual stock capital flow with super/large/mid/small deal breakdown.',
+    usage: 'Paste the key from your Mairuiapi account. When set, it becomes the primary capital flow source; absent falls back to AkShare East Finance.',
+    valueNotes: [
+      'A-share only (Shanghai/Shenzhen). HK and US stocks are unaffected.',
+      'Free tier: 300 req/min — sufficient for daily analysis.',
+    ],
+    impact: ['Capital flow data source: Mairuiapi (with 4-tier breakdown) when configured, AkShare East Finance (main-force net only) otherwise.'],
     notes: ['Do not expose real keys in issues, logs, or screenshots.'],
   },
   'settings.data_source.stock_index_remote': {

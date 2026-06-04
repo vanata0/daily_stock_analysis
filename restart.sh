@@ -27,6 +27,7 @@ if [ -f "$PID_FILE" ]; then
   fi
   rm -f "$PID_FILE"
 fi
+fuser -k 8000/tcp 2>/dev/null || true
 
 # ── 激活虚拟环境 ─────────────────────────────
 [ -f venv/bin/activate ] || die "未找到 venv/，请先运行: python -m venv venv && pip install -r requirements.txt"

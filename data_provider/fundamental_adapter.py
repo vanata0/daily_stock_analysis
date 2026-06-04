@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+import requests as _requests
 
 logger = logging.getLogger(__name__)
 
@@ -413,9 +414,76 @@ class AkshareFundamentalAdapter:
         result["status"] = "partial" if has_content else "not_supported"
         return result
 
+    def _get_capital_flow_mairui(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch individual stock capital flow from Mairuiapi.
+
+        Returns a stock_flow dict with main_net_inflow / inflow_5d / inflow_10d
+        (all in yuan), plus a granular breakdown by deal size. Returns None when
+        the key is absent, the request fails, or data is empty.
+        """
+        from src.config import get_config
+        licence = get_config().mairui_api_key
+        if not licence:
+            return None
+
+        # Mairuiapi uses bare 6-digit A-share codes (no sh/sz prefix)
+        code = re.sub(r'^(sh|sz|bj)', '', stock_code, flags=re.IGNORECASE)
+
+        url = f"https://api.mairuiapi.com/hsstock/history/transaction/{code}/{licence}?lt=10"
+        try:
+            resp = _requests.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("mairui capital_flow request failed for %s: %s", stock_code, exc)
+            return None
+
+        if not isinstance(data, list) or not data:
+            return None
+
+        # Check for API-level error responses (e.g. {"code": -1, "msg": "..."})
+        if isinstance(data, dict):
+            return None
+
+        def _day_net(rec: dict) -> float:
+            buy = rec.get("zmbtdcje", 0) or 0
+            buy += rec.get("zmbddcje", 0) or 0
+            sell = rec.get("zmstdcje", 0) or 0
+            sell += rec.get("zmsddcje", 0) or 0
+            return float(buy - sell)
+
+        latest = data[0]
+        main_net_inflow = _day_net(latest)
+        inflow_5d = sum(_day_net(r) for r in data[:5]) if len(data) >= 5 else None
+        inflow_10d = sum(_day_net(r) for r in data[:10]) if len(data) >= 10 else None
+
+        # Granular breakdown for the most recent trading day
+        breakdown = {
+            "super_buy":  float(latest.get("zmbtdcje", 0) or 0),
+            "large_buy":  float(latest.get("zmbddcje", 0) or 0),
+            "mid_buy":    float(latest.get("zmbzdcje", 0) or 0),
+            "small_buy":  float(latest.get("zmbxdcje", 0) or 0),
+            "super_sell": float(latest.get("zmstdcje", 0) or 0),
+            "large_sell": float(latest.get("zmsddcje", 0) or 0),
+            "mid_sell":   float(latest.get("zmszdcje", 0) or 0),
+            "small_sell": float(latest.get("zmsxdcje", 0) or 0),
+        }
+
+        return {
+            "main_net_inflow": main_net_inflow,
+            "inflow_5d": inflow_5d,
+            "inflow_10d": inflow_10d,
+            "breakdown": breakdown,
+            "trade_date": str(latest.get("t", "")),
+        }
+
     def get_capital_flow(self, stock_code: str, top_n: int = 5) -> Dict[str, Any]:
         """
         Return stock + sector capital flow.
+
+        Individual stock flow: Mairuiapi (primary) → AkShare East-Finance (fallback).
+        Sector rankings: AkShare only.
         """
         result: Dict[str, Any] = {
             "status": "not_supported",
@@ -425,26 +493,33 @@ class AkshareFundamentalAdapter:
             "errors": [],
         }
 
-        stock_df, stock_source, stock_errors = self._call_df_candidates([
-            ("stock_individual_fund_flow", {"stock": stock_code}),
-            ("stock_individual_fund_flow", {"symbol": stock_code}),
-            ("stock_individual_fund_flow", {}),
-            ("stock_main_fund_flow", {"symbol": stock_code}),
-            ("stock_main_fund_flow", {}),
-        ])
-        result["errors"].extend(stock_errors)
-        if stock_df is not None:
-            row = _extract_latest_row(stock_df, stock_code)
-            if row is not None:
-                net_inflow = _safe_float(_pick_by_keywords(row, ["主力净流入", "净流入", "净额"]))
-                inflow_5d = _safe_float(_pick_by_keywords(row, ["5日", "五日"]))
-                inflow_10d = _safe_float(_pick_by_keywords(row, ["10日", "十日"]))
-                result["stock_flow"] = {
-                    "main_net_inflow": net_inflow,
-                    "inflow_5d": inflow_5d,
-                    "inflow_10d": inflow_10d,
-                }
-                result["source_chain"].append(f"capital_stock:{stock_source}")
+        # --- Individual stock flow: Mairuiapi first ---
+        mairui_flow = self._get_capital_flow_mairui(stock_code)
+        if mairui_flow is not None:
+            result["stock_flow"] = mairui_flow
+            result["source_chain"].append("capital_stock:mairui")
+        else:
+            # Fallback: AkShare East-Finance
+            stock_df, stock_source, stock_errors = self._call_df_candidates([
+                ("stock_individual_fund_flow", {"stock": stock_code}),
+                ("stock_individual_fund_flow", {"symbol": stock_code}),
+                ("stock_individual_fund_flow", {}),
+                ("stock_main_fund_flow", {"symbol": stock_code}),
+                ("stock_main_fund_flow", {}),
+            ])
+            result["errors"].extend(stock_errors)
+            if stock_df is not None:
+                row = _extract_latest_row(stock_df, stock_code)
+                if row is not None:
+                    net_inflow = _safe_float(_pick_by_keywords(row, ["主力净流入", "净流入", "净额"]))
+                    inflow_5d = _safe_float(_pick_by_keywords(row, ["5日", "五日"]))
+                    inflow_10d = _safe_float(_pick_by_keywords(row, ["10日", "十日"]))
+                    result["stock_flow"] = {
+                        "main_net_inflow": net_inflow,
+                        "inflow_5d": inflow_5d,
+                        "inflow_10d": inflow_10d,
+                    }
+                    result["source_chain"].append(f"capital_stock:{stock_source}")
 
         sector_df, sector_source, sector_errors = self._call_df_candidates([
             ("stock_sector_fund_flow_rank", {}),

@@ -195,6 +195,9 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
 
     // Connection error handling
     eventSource.onerror = (error) => {
+      // Guard against multiple firings for the same disconnect event.
+      if (reconnectTimeoutRef.current) return;
+
       setIsConnected(false);
       callbacksRef.current.onError?.(error);
 

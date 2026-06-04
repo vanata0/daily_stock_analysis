@@ -455,6 +455,28 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 15,
     },
+    "MAIRUI_API_KEY": {
+        "title": "迈瑞数据 API Key",
+        "description": "API key for Mairuiapi individual stock capital flow (super/large/mid/small deal breakdown). Acts as primary source; falls back to AkShare East Finance when absent.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 16,
+        "help_key": "settings.data_source.MAIRUI_API_KEY",
+        "examples": ["MAIRUI_API_KEY=your_key_here"],
+        "docs": [
+            {
+                "label": "迈瑞数据官网",
+                "href": "https://mairuiapi.com",
+            },
+        ],
+    },
     "STOCK_INDEX_REMOTE_UPDATE_ENABLED": {
         "title": "Remote Stock Index Updates",
         "description": "Automatically refresh the local stock autocomplete index from the built-in GitHub main source.",

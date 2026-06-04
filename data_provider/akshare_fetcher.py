@@ -1309,6 +1309,9 @@ class AkshareFetcher(BaseFetcher):
             # 44:流通市值(亿) 45:总市值(亿) 46:市净率 47:涨停价 48:跌停价 49:量比
             # 使用 realtime_types.py 中的统一转换函数
             amount = _parse_tencent_amount(fields)
+            # 外盘/内盘单位为"手"，与成交量保持一致转换为"股"
+            raw_outer = safe_int(fields[7]) if len(fields) > 7 and fields[7] else None
+            raw_inner = safe_int(fields[8]) if len(fields) > 8 and fields[8] else None
             quote = UnifiedRealtimeQuote(
                 code=stock_code,
                 name=fields[1] if len(fields) > 1 else "",
@@ -1319,22 +1322,25 @@ class AkshareFetcher(BaseFetcher):
                 volume=_normalize_tencent_volume(fields),
                 amount=amount,
                 open_price=safe_float(fields[5]),
-                high=safe_float(fields[33]) if len(fields) > 33 else None,  # 修正：字段 33 是最高价
-                low=safe_float(fields[34]) if len(fields) > 34 else None,  # 修正：字段 34 是最低价
+                high=safe_float(fields[33]) if len(fields) > 33 else None,
+                low=safe_float(fields[34]) if len(fields) > 34 else None,
                 pre_close=safe_float(fields[4]),
                 turnover_rate=safe_float(fields[38]) if len(fields) > 38 else None,
                 amplitude=safe_float(fields[43]) if len(fields) > 43 else None,
-                volume_ratio=safe_float(fields[49]) if len(fields) > 49 else None,  # 量比
-                pe_ratio=safe_float(fields[39]) if len(fields) > 39 else None,  # 市盈率
-                pb_ratio=safe_float(fields[46]) if len(fields) > 46 else None,  # 市净率
-                circ_mv=safe_float(fields[44]) * 100000000 if len(fields) > 44 and fields[44] else None,  # 流通市值(亿->元)
-                total_mv=safe_float(fields[45]) * 100000000 if len(fields) > 45 and fields[45] else None,  # 总市值(亿->元)
+                volume_ratio=safe_float(fields[49]) if len(fields) > 49 else None,
+                pe_ratio=safe_float(fields[39]) if len(fields) > 39 else None,
+                pb_ratio=safe_float(fields[46]) if len(fields) > 46 else None,
+                circ_mv=safe_float(fields[44]) * 100000000 if len(fields) > 44 and fields[44] else None,
+                total_mv=safe_float(fields[45]) * 100000000 if len(fields) > 45 and fields[45] else None,
+                outer_vol=raw_outer * 100 if raw_outer is not None else None,
+                inner_vol=raw_inner * 100 if raw_inner is not None else None,
             )
-            
+
             logger.info(
                 f"[实时行情-腾讯] {stock_code} {quote.name}: endpoint={TENCENT_REALTIME_ENDPOINT}, "
                 f"价格={quote.price}, 涨跌={quote.change_pct}%, 量比={quote.volume_ratio}, "
-                f"换手率={quote.turnover_rate}%, elapsed={api_elapsed:.2f}s"
+                f"换手率={quote.turnover_rate}%, 外盘={quote.outer_vol}, 内盘={quote.inner_vol}, "
+                f"elapsed={api_elapsed:.2f}s"
             )
             return quote
             

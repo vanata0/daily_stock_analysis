@@ -131,6 +131,181 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(items["REPORT_SHOW_LLM_MODEL"]["value"], "")
         self.assertTrue(items["REPORT_SHOW_LLM_MODEL"]["raw_value_exists"])
 
+    def test_get_config_uses_runtime_env_as_display_fallback(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "300750",
+                "LITELLM_MODEL": "openai/gpt-5",
+                "LLM_CHANNELS": "my_proxy",
+                "LLM_MY_PROXY_BASE_URL": "https://proxy.example.com/v1",
+                "LLM_MY_PROXY_MODELS": "gpt-5",
+                "LLM_UNUSED_API_KEY": "sk-should-not-leak",
+                "UNRELATED_API_KEY": "sk-should-not-leak",
+            },
+        ):
+            payload = self.service.get_config(include_schema=True)
+            raw_payload = self.service.get_config(include_schema=False)
+
+        items = {item["key"]: item for item in payload["items"]}
+        raw_items = {item["key"]: item for item in raw_payload["items"]}
+        self.assertEqual(items["STOCK_LIST"]["value"], "600519")
+        self.assertTrue(items["STOCK_LIST"]["raw_value_exists"])
+        self.assertEqual(items["LITELLM_MODEL"]["value"], "openai/gpt-5")
+        self.assertFalse(items["LITELLM_MODEL"]["raw_value_exists"])
+        self.assertEqual(items["LLM_CHANNELS"]["value"], "my_proxy")
+        self.assertFalse(items["LLM_CHANNELS"]["raw_value_exists"])
+        self.assertEqual(items["LLM_MY_PROXY_BASE_URL"]["value"], "https://proxy.example.com/v1")
+        self.assertFalse(items["LLM_MY_PROXY_BASE_URL"]["raw_value_exists"])
+        self.assertEqual(items["LLM_MY_PROXY_MODELS"]["value"], "gpt-5")
+        self.assertFalse(items["LLM_MY_PROXY_MODELS"]["raw_value_exists"])
+        self.assertNotIn("LLM_UNUSED_API_KEY", items)
+        self.assertNotIn("UNRELATED_API_KEY", items)
+        self.assertNotIn("LLM_UNUSED_API_KEY", raw_items)
+        self.assertNotIn("UNRELATED_API_KEY", raw_items)
+
+    def test_get_config_runtime_env_fallback_does_not_persist_llm_fields_on_save(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+        )
+
+        startup_env = {
+            "LITELLM_MODEL": "openai/gpt-5",
+            "LLM_CHANNELS": "my_proxy",
+            "LLM_MY_PROXY_PROTOCOL": "openai",
+            "LLM_MY_PROXY_BASE_URL": "https://proxy.example.com/v1",
+            "LLM_MY_PROXY_API_KEYS": "sk-test-value",
+            "LLM_MY_PROXY_MODELS": "openai/gpt-5",
+        }
+        with patch.dict(os.environ, startup_env, clear=False):
+            payload_before = self.service.get_config(include_schema=True)
+            items_before = {item["key"]: item for item in payload_before["items"]}
+            self.assertEqual(items_before["LITELLM_MODEL"]["value"], "openai/gpt-5")
+            self.assertFalse(items_before["LITELLM_MODEL"]["raw_value_exists"])
+            self.assertEqual(
+                items_before["LLM_MY_PROXY_BASE_URL"]["value"],
+                "https://proxy.example.com/v1",
+            )
+            self.assertFalse(items_before["LLM_MY_PROXY_BASE_URL"]["raw_value_exists"])
+            self.assertEqual(items_before["LLM_MY_PROXY_MODELS"]["value"], "openai/gpt-5")
+            self.assertFalse(items_before["LLM_MY_PROXY_MODELS"]["raw_value_exists"])
+
+            current_version = self.manager.get_config_version()
+            response = self.service.update(
+                config_version=current_version,
+                items=[{"key": "STOCK_LIST", "value": "300750"}],
+                reload_now=False,
+            )
+            self.assertTrue(response["success"])
+
+            current_map = self.manager.read_config_map()
+            self.assertEqual(current_map["STOCK_LIST"], "300750")
+            self.assertNotIn("LITELLM_MODEL", current_map)
+            self.assertNotIn("LLM_MY_PROXY_BASE_URL", current_map)
+            self.assertNotIn("LLM_MY_PROXY_MODELS", current_map)
+
+            payload_after = self.service.get_config(include_schema=True)
+            items_after = {item["key"]: item for item in payload_after["items"]}
+            self.assertEqual(items_after["LITELLM_MODEL"]["value"], "openai/gpt-5")
+            self.assertFalse(items_after["LITELLM_MODEL"]["raw_value_exists"])
+            self.assertEqual(
+                items_after["LLM_MY_PROXY_BASE_URL"]["value"],
+                "https://proxy.example.com/v1",
+            )
+            self.assertFalse(items_after["LLM_MY_PROXY_BASE_URL"]["raw_value_exists"])
+            self.assertEqual(items_after["LLM_MY_PROXY_MODELS"]["value"], "openai/gpt-5")
+            self.assertFalse(items_after["LLM_MY_PROXY_MODELS"]["raw_value_exists"])
+
+    def test_runtime_env_fallback_does_not_override_saved_provider_and_base_url_settings(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+            "LITELLM_MODEL=openai/gpt-4o-mini",
+            "OPENAI_MODEL=gpt-4.1",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_BASE_URL": "https://runtime-openai.v1",
+                "OPENAI_API_KEY": "runtime-openai-key",
+            },
+            clear=False,
+        ):
+            pre_save = self.service.get_config(include_schema=True)
+            pre_save_items = {item["key"]: item for item in pre_save["items"]}
+
+            self.assertEqual(pre_save_items["OPENAI_BASE_URL"]["value"], "https://runtime-openai.v1")
+            self.assertFalse(pre_save_items["OPENAI_BASE_URL"]["raw_value_exists"])
+            self.assertEqual(pre_save_items["OPENAI_API_KEY"]["value"], "runtime-openai-key")
+            self.assertFalse(pre_save_items["OPENAI_API_KEY"]["raw_value_exists"])
+            self.assertEqual(pre_save_items["LITELLM_MODEL"]["value"], "openai/gpt-4o-mini")
+            self.assertTrue(pre_save_items["LITELLM_MODEL"]["raw_value_exists"])
+            self.assertEqual(pre_save_items["OPENAI_MODEL"]["value"], "gpt-4.1")
+            self.assertTrue(pre_save_items["OPENAI_MODEL"]["raw_value_exists"])
+
+            response = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "STOCK_LIST", "value": "300750"}],
+                reload_now=False,
+            )
+            self.assertTrue(response["success"])
+
+            current_map = self.manager.read_config_map()
+            self.assertEqual(current_map["STOCK_LIST"], "300750")
+            self.assertEqual(current_map["LITELLM_MODEL"], "openai/gpt-4o-mini")
+            self.assertEqual(current_map["OPENAI_MODEL"], "gpt-4.1")
+            self.assertNotIn("OPENAI_BASE_URL", current_map)
+            self.assertNotIn("OPENAI_API_KEY", current_map)
+
+    def test_validate_uses_runtime_injected_llm_channels_for_support_keys(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "my_proxy",
+                "LLM_MY_PROXY_PROTOCOL": "openai",
+                "LLM_MY_PROXY_API_KEYS": "sk-test-value",
+                "LLM_MY_PROXY_BASE_URL": "https://proxy.example.com/v1",
+                "LLM_MY_PROXY_MODELS": "openai/gpt-5",
+            },
+            clear=False,
+        ):
+            validation = self.service.validate(
+                items=[{"key": "LLM_MY_PROXY_BASE_URL", "value": "not-a-url"}],
+            )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "LLM_MY_PROXY_BASE_URL" and issue["code"] == "invalid_url"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_get_config_switch_type_uses_runtime_env_display_fallback(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+        )
+
+        with patch.dict(os.environ, {"REPORT_SHOW_LLM_MODEL": "false"}, clear=False):
+            payload = self.service.get_config(include_schema=True)
+
+        items = {item["key"]: item for item in payload["items"]}
+        self.assertEqual(items["REPORT_SHOW_LLM_MODEL"]["value"], "false")
+        self.assertFalse(items["REPORT_SHOW_LLM_MODEL"]["raw_value_exists"])
+
     def test_get_config_with_schema_hides_unregistered_env_keys(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519,000001",

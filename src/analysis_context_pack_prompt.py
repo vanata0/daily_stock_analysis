@@ -70,6 +70,21 @@ CORE_DEGRADED_STATUSES = {
     "estimated",
 }
 
+KNOWN_MARKET_PHASES = frozenset(
+    {
+        "premarket",
+        "intraday",
+        "lunch_break",
+        "closing_auction",
+        "postmarket",
+        "non_trading",
+        "unknown",
+    }
+)
+
+INTRADAY_MARKET_PHASES = frozenset({"intraday", "lunch_break", "closing_auction"})
+CONSERVATIVE_MARKET_PHASES = frozenset({"non_trading", "unknown"})
+
 SENSITIVE_MARKERS = (
     "api_key",
     "access_token",
@@ -297,6 +312,8 @@ def _data_limitation_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
         separator = ": " if lang == "en" else "："
         lines.append(f"- {label}{separator}{_join_text(limitations, lang=lang)}")
 
+    lines.extend(_phase_data_quality_constraint_lines(payload, lang=lang))
+
     if _has_core_degraded_block(payload):
         if lang == "en":
             lines.append(
@@ -364,6 +381,59 @@ def _has_core_degraded_block(payload: Dict[str, Any]) -> bool:
         if status in CORE_DEGRADED_STATUSES:
             return True
     return False
+
+
+def _phase_data_quality_constraint_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
+    if not _has_core_degraded_block(payload):
+        return []
+
+    phase = _phase_value(payload)
+    if not phase or phase == "postmarket":
+        return []
+
+    if lang == "en":
+        if phase in INTRADAY_MARKET_PHASES:
+            return [
+                "- Phase/data rule: intraday judgment is limited by quote, daily-bar, "
+                "or technical data quality; state those limitations before making "
+                "near-term trading conclusions."
+            ]
+        if phase == "premarket":
+            return [
+                "- Phase/data rule: the opening plan is limited by data freshness "
+                "or fallback status; do not describe degraded quote data as "
+                "today's completed price action."
+            ]
+        if phase in CONSERVATIVE_MARKET_PHASES:
+            return [
+                "- Phase/data rule: use only available data conservatively and do "
+                "not fill in nonexistent intraday facts."
+            ]
+        return []
+
+    if phase in INTRADAY_MARKET_PHASES:
+        return [
+            "- 阶段数据规则：盘中判断受实时行情、日线或技术数据质量限制；"
+            "给出短线结论前必须说明这些限制。"
+        ]
+    if phase == "premarket":
+        return [
+            "- 阶段数据规则：开盘计划受数据新鲜度或降级状态限制；"
+            "不得把降级行情描述成今日走势已经发生。"
+        ]
+    if phase in CONSERVATIVE_MARKET_PHASES:
+        return [
+            "- 阶段数据规则：只能保守使用当前可用数据，不得补全不存在的盘中事实。"
+        ]
+    return []
+
+
+def _phase_value(payload: Dict[str, Any]) -> str:
+    phase_payload = payload.get("phase")
+    if not isinstance(phase_payload, Mapping):
+        return ""
+    phase = _safe_text(phase_payload.get("phase"))
+    return phase if phase in KNOWN_MARKET_PHASES else ""
 
 
 def _quality_level_label(level: str, *, lang: str) -> str:

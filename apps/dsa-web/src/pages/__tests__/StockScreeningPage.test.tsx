@@ -189,4 +189,82 @@ describe('StockScreeningPage', () => {
     expect(screen.getByText('等待运行')).toBeInTheDocument();
     expect(screen.getByText('当前策略：资金热度 · A 股')).toBeInTheDocument();
   });
+
+  it('surfaces AlphaSift LLM fallback instead of showing empty LLM fields as normal', async () => {
+    getAlphaSiftStatus.mockResolvedValueOnce({
+      enabled: true,
+      available: true,
+      installSpecIsDefault: true,
+    });
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '000001',
+          name: '平安银行',
+          score: 88.5,
+          reason: '本地后置评分: value_quality',
+          amount: 1042000000,
+          factorScores: {
+            value: 87.44,
+            liquidity: 93.33,
+          },
+          raw: {},
+        },
+      ],
+      candidateCount: 1,
+      snapshotCount: 5193,
+      afterFilterCount: 20,
+      llmRanked: false,
+      warnings: ['LLM ranking failed, falling back to screen_score: Missing gemini_api_key'],
+    });
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+
+    expect(await screen.findByText('LLM 已降级')).toBeInTheDocument();
+    expect(screen.getByText(/Missing gemini_api_key/)).toBeInTheDocument();
+    expect(screen.getByText('未重排')).toBeInTheDocument();
+    expect(screen.getByText('本次 LLM 重排失败或未返回判断，当前展示的是本地因子评分结果。')).toBeInTheDocument();
+    expect(screen.getByText('LLM 元数据未返回')).toBeInTheDocument();
+    expect(screen.getAllByText('未返回（LLM 已降级）')).toHaveLength(2);
+  });
+
+  it('deduplicates AlphaSift snapshot fallback warnings and source errors', async () => {
+    getAlphaSiftStatus.mockResolvedValueOnce({
+      enabled: true,
+      available: true,
+      installSpecIsDefault: true,
+    });
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '601919',
+          name: '中远海控',
+          score: 82.88,
+          llmScore: 82,
+          riskLevel: 'low',
+          raw: {},
+        },
+      ],
+      candidateCount: 1,
+      llmRanked: true,
+      warnings: ['Snapshot source fallback: tushare: tushare trade_cal returned no open trading days'],
+      sourceErrors: ['tushare: tushare trade_cal returned no open trading days'],
+    });
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+
+    expect(await screen.findByText('AlphaSift 提示')).toBeInTheDocument();
+    expect(screen.getAllByText(/tushare trade_cal returned no open trading days/)).toHaveLength(1);
+    expect(screen.getByText(/数据源降级：tushare/)).toBeInTheDocument();
+  });
 });

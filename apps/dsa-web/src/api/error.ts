@@ -343,26 +343,6 @@ export function parseApiError(error: unknown): ParsedApiError {
     });
   }
 
-  if (errorCode === 'alphasift_install_auth_required') {
-    return createParsedApiError({
-      title: 'AlphaSift 自动安装需要管理员登录',
-      message: '自动安装会在后端 Python 环境执行 pip install。请先开启 ADMIN_AUTH_ENABLED 并完成管理员登录，或手动安装 AlphaSift 后再开启选股。',
-      rawMessage,
-      status,
-      category: 'http_error',
-    });
-  }
-
-  if (errorCode === 'alphasift_install_unauthorized') {
-    return createParsedApiError({
-      title: 'AlphaSift 自动安装未授权',
-      message: '当前管理员会话无效或已过期。请重新登录后再开启 AlphaSift，或手动安装 AlphaSift 后再开启选股。',
-      rawMessage,
-      status,
-      category: 'http_error',
-    });
-  }
-
   if (errorCode === 'alphasift_install_failed') {
     return createParsedApiError({
       title: 'AlphaSift 自动安装失败',

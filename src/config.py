@@ -652,6 +652,9 @@ class Config:
     llm_models_source: str = "legacy_env"
     # LLM_CHANNELS: list of channel dicts, each with name/base_url/api_keys/models
     llm_channels: List[Dict[str, Any]] = field(default_factory=list)
+    # Raw channel names requested through LLM_CHANNELS, including channels that
+    # were skipped during parsing because required channel fields were missing.
+    llm_channel_names: List[str] = field(default_factory=list)
     # Pre-built LiteLLM Router model_list (populated from channels, YAML, or legacy keys)
     llm_model_list: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -1123,14 +1126,182 @@ class Config:
             if (c or "").strip()
         ]
         
-        # 如果没有配置，使用默认的示例股票
-        if not stock_list:
-            stock_list = ['600519', '000001', '300750']
-        
-        # LLM channel config delegated to sub-method (P0-2 config split)
-        llm_cfg = cls._load_llm_config()
+        # === LiteLLM multi-key parsing ===
+        # GEMINI_API_KEYS (comma-separated) > GEMINI_API_KEY (single)
+        _gemini_keys_raw = os.getenv('GEMINI_API_KEYS', '')
+        gemini_api_keys = [k.strip() for k in _gemini_keys_raw.split(',') if k.strip()]
+        _single_gemini = os.getenv('GEMINI_API_KEY', '').strip()
+        if not gemini_api_keys and _single_gemini:
+            gemini_api_keys = [_single_gemini]
 
-        # Context compression config (added in upstream #1460)
+        # ANTHROPIC_API_KEYS > ANTHROPIC_API_KEY
+        _anthropic_keys_raw = os.getenv('ANTHROPIC_API_KEYS', '')
+        anthropic_api_keys = [k.strip() for k in _anthropic_keys_raw.split(',') if k.strip()]
+        _single_anthropic = os.getenv('ANTHROPIC_API_KEY', '').strip()
+        if not anthropic_api_keys and _single_anthropic:
+            anthropic_api_keys = [_single_anthropic]
+
+        # OPENAI_API_KEYS > AIHUBMIX_KEY > OPENAI_API_KEY
+        _aihubmix = os.getenv('AIHUBMIX_KEY', '').strip()
+        _openai_keys_raw = os.getenv('OPENAI_API_KEYS', '')
+        openai_api_keys = [k.strip() for k in _openai_keys_raw.split(',') if k.strip()]
+        if not openai_api_keys:
+            _single_openai = os.getenv('OPENAI_API_KEY', '').strip()
+            _fallback_key = _aihubmix or _single_openai
+            if _fallback_key:
+                openai_api_keys = [_fallback_key]
+        openai_base_url = os.getenv('OPENAI_BASE_URL') or (
+            'https://aihubmix.com/v1' if _aihubmix else None
+        )
+
+        # DEEPSEEK_API_KEYS > DEEPSEEK_API_KEY (independent from OpenAI-compatible layer)
+        _deepseek_keys_raw = os.getenv('DEEPSEEK_API_KEYS', '')
+        deepseek_api_keys = [k.strip() for k in _deepseek_keys_raw.split(',') if k.strip()]
+        if not deepseek_api_keys:
+            _single_deepseek = os.getenv('DEEPSEEK_API_KEY', '').strip()
+            if _single_deepseek:
+                deepseek_api_keys = [_single_deepseek]
+
+        # Anspire Open shares the same key as Anspire Search and exposes an
+        # OpenAI-compatible LLM gateway.  When no other OpenAI-compatible key is
+        # configured, use ANSPIRE_API_KEYS as the legacy openai-compatible
+        # provider so "one key" setups work without LLM_CHANNELS.
+        anspire_keys_str = os.getenv('ANSPIRE_API_KEYS', '')
+        anspire_api_keys = [k.strip() for k in anspire_keys_str.split(',') if k.strip()]
+        anspire_llm_enabled = parse_env_bool(os.getenv('ANSPIRE_LLM_ENABLED'), default=True)
+        anspire_llm_base_url = (
+            os.getenv('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
+        ).strip()
+        _anspire_llm_model_env = os.getenv('ANSPIRE_LLM_MODEL', '').strip()
+        anspire_channel_disabled = False
+        for _raw_channel in os.getenv('LLM_CHANNELS', '').split(','):
+            if _raw_channel.strip().lower() != "anspire":
+                continue
+            _channel_enabled_raw = os.getenv('LLM_ANSPIRE_ENABLED')
+            if _channel_enabled_raw is not None and _channel_enabled_raw.strip():
+                anspire_channel_disabled = not parse_env_bool(_channel_enabled_raw, default=True)
+            else:
+                anspire_channel_disabled = not anspire_llm_enabled
+            break
+        using_anspire_llm_legacy = bool(
+            anspire_llm_enabled
+            and not anspire_channel_disabled
+            and anspire_api_keys
+            and not openai_api_keys
+        )
+        if using_anspire_llm_legacy:
+            openai_api_keys = list(anspire_api_keys)
+            openai_base_url = anspire_llm_base_url
+
+        # LITELLM_MODEL: explicit config takes precedence; else infer from available keys
+        litellm_model = os.getenv('LITELLM_MODEL', '').strip()
+        inferred_legacy_deepseek_model = False
+        _openai_model_env = os.getenv('OPENAI_MODEL', '').strip()
+        if using_anspire_llm_legacy:
+            _openai_model_name = _anspire_llm_model_env or _openai_model_env or ANSPIRE_LLM_MODEL_DEFAULT
+        else:
+            _openai_model_name = _openai_model_env or 'gpt-5.5'
+        if not litellm_model:
+            _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview').strip()
+            _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6').strip()
+            if gemini_api_keys:
+                litellm_model = f'gemini/{_gemini_model_name}'
+            elif anthropic_api_keys:
+                litellm_model = f'anthropic/{_anthropic_model_name}'
+            elif deepseek_api_keys:
+                litellm_model = 'deepseek/deepseek-chat'
+                inferred_legacy_deepseek_model = True
+            elif openai_api_keys:
+                # For openai-compatible models, add prefix only if not already prefixed
+                if '/' not in _openai_model_name:
+                    litellm_model = f'openai/{_openai_model_name}'
+                else:
+                    litellm_model = _openai_model_name
+
+        # LITELLM_FALLBACK_MODELS: comma-separated list of fallback models
+        _fallback_str = os.getenv('LITELLM_FALLBACK_MODELS', '')
+        if _fallback_str.strip():
+            litellm_fallback_models = [m.strip() for m in _fallback_str.split(',') if m.strip()]
+        else:
+            # Backward compat: use gemini_model_fallback when primary is gemini
+            _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview').strip()
+            if litellm_model.startswith('gemini/') and _gemini_fallback:
+                _fb = f'gemini/{_gemini_fallback}' if '/' not in _gemini_fallback else _gemini_fallback
+                litellm_fallback_models = [_fb]
+            else:
+                litellm_fallback_models = []
+
+        # === LLM Channels + YAML config ===
+        litellm_config_path = os.getenv('LITELLM_CONFIG', '').strip() or None
+        llm_models_source = "legacy_env"
+        llm_channels: List[Dict[str, Any]] = []
+        llm_channel_names: List[str] = []
+        llm_model_list: List[Dict[str, Any]] = []
+
+        # Priority 1: LITELLM_CONFIG (standard LiteLLM YAML config file)
+        if litellm_config_path:
+            llm_model_list = cls._parse_litellm_yaml(litellm_config_path)
+            if llm_model_list:
+                llm_models_source = "litellm_config"
+
+        # Priority 2: LLM_CHANNELS (env var based channel config)
+        if not llm_model_list:
+            _channels_str = os.getenv('LLM_CHANNELS', '').strip()
+            if _channels_str:
+                llm_channel_names = [
+                    ch.strip().lower()
+                    for ch in _channels_str.split(',')
+                    if ch.strip()
+                ]
+                llm_channels = cls._parse_llm_channels(_channels_str)
+                llm_model_list = cls._channels_to_model_list(llm_channels)
+                if llm_model_list:
+                    llm_models_source = "llm_channels"
+
+        # Priority 3: Legacy env vars → auto-build model_list (backward compatible)
+        if not llm_model_list:
+            llm_model_list = cls._legacy_keys_to_model_list(
+                gemini_api_keys, anthropic_api_keys, openai_api_keys,
+                openai_base_url,
+                deepseek_api_keys,
+            )
+            if llm_model_list:
+                llm_models_source = "legacy_env"
+
+        if (
+            inferred_legacy_deepseek_model
+            and llm_models_source == "legacy_env"
+            and litellm_model == 'deepseek/deepseek-chat'
+        ):
+            logger.warning(
+                "Deprecation warning:\n"
+                "deepseek-chat will be deprecated on 2026-07-24,\n"
+                "please migrate to deepseek-v4-flash."
+            )
+
+        # Auto-infer LITELLM_MODEL from channels when not explicitly set
+        if not litellm_model and llm_channels:
+            for _ch in llm_channels:
+                if _ch.get('models'):
+                    litellm_model = _ch['models'][0]
+                    break
+
+        # Auto-infer LITELLM_FALLBACK_MODELS from channels when not explicitly set
+        if not litellm_fallback_models and llm_channels and litellm_model:
+            _all_ch_models: List[str] = []
+            for _ch in llm_channels:
+                _all_ch_models.extend(_ch.get('models', []))
+            _seen = {litellm_model}
+            litellm_fallback_models = [
+                m for m in _all_ch_models
+                if m not in _seen and not _seen.add(m)  # type: ignore[func-returns-value]
+            ]
+
+        agent_litellm_model = normalize_agent_litellm_model(
+            os.getenv('AGENT_LITELLM_MODEL', ''),
+            configured_models=set(get_configured_llm_models(llm_model_list)),
+        )
+
         agent_context_compression_profile = normalize_agent_context_compression_profile(
             os.getenv('AGENT_CONTEXT_COMPRESSION_PROFILE')
         )
@@ -1254,7 +1425,41 @@ class Config:
                 os.getenv('STOCK_INDEX_REMOTE_UPDATE_ENABLED'),
                 default=True,
             ),
-            **llm_cfg,
+            litellm_model=litellm_model,
+            litellm_fallback_models=litellm_fallback_models,
+            llm_temperature=resolve_unified_llm_temperature(litellm_model),
+            litellm_config_path=litellm_config_path,
+            llm_models_source=llm_models_source,
+            llm_channels=llm_channels,
+            llm_channel_names=llm_channel_names,
+            llm_model_list=llm_model_list,
+            gemini_api_keys=gemini_api_keys,
+            anthropic_api_keys=anthropic_api_keys,
+            openai_api_keys=openai_api_keys,
+            deepseek_api_keys=deepseek_api_keys,
+            gemini_api_key=os.getenv('GEMINI_API_KEY'),
+            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview'),
+            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview'),
+            gemini_temperature=parse_env_float(os.getenv('GEMINI_TEMPERATURE'), 0.7, field_name='GEMINI_TEMPERATURE'),
+            gemini_request_delay=parse_env_float(os.getenv('GEMINI_REQUEST_DELAY'), 2.0, field_name='GEMINI_REQUEST_DELAY', minimum=0.0),
+            gemini_max_retries=parse_env_int(os.getenv('GEMINI_MAX_RETRIES'), 5, field_name='GEMINI_MAX_RETRIES', minimum=0),
+            gemini_retry_delay=parse_env_float(os.getenv('GEMINI_RETRY_DELAY'), 5.0, field_name='GEMINI_RETRY_DELAY', minimum=0.0),
+            anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
+            anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
+            anthropic_temperature=parse_env_float(os.getenv('ANTHROPIC_TEMPERATURE'), 0.7, field_name='ANTHROPIC_TEMPERATURE'),
+            anthropic_max_tokens=parse_env_int(os.getenv('ANTHROPIC_MAX_TOKENS'), 8192, field_name='ANTHROPIC_MAX_TOKENS', minimum=1),
+            openai_api_key=openai_api_keys[0] if openai_api_keys else None,
+            openai_base_url=openai_base_url,
+            openai_model=_openai_model_name,
+            openai_vision_model=os.getenv('OPENAI_VISION_MODEL') or None,
+            openai_temperature=parse_env_float(os.getenv('OPENAI_TEMPERATURE'), 0.7, field_name='OPENAI_TEMPERATURE'),
+            vision_model=(
+                os.getenv('VISION_MODEL')
+                or os.getenv('OPENAI_VISION_MODEL')
+                or ""
+            ),
+            vision_provider_priority=os.getenv('VISION_PROVIDER_PRIORITY', 'gemini,anthropic,openai'),
+            anspire_api_keys=anspire_api_keys,
             bocha_api_keys=bocha_api_keys,
             minimax_api_keys=minimax_api_keys,
             tavily_api_keys=tavily_api_keys,
@@ -2384,9 +2589,6 @@ class Config:
             if (c or "").strip()
         ]
 
-        if not stock_list:
-            stock_list = ['000001']
-
         self.stock_list = stock_list
     
     def validate_structured(self) -> List[ConfigIssue]:
@@ -2408,7 +2610,7 @@ class Config:
         if not self.stock_list:
             issues.append(ConfigIssue(
                 severity="error",
-                message="未配置自选股列表 (STOCK_LIST)",
+                message="未配置 STOCK_LIST。请设置至少一个股票代码，例如：600519,hk00700,AAPL。",
                 field="STOCK_LIST",
             ))
         elif self.stock_email_groups:
@@ -2457,14 +2659,36 @@ class Config:
         # direct litellm env path and therefore do not populate llm_model_list.
         has_direct_env_model = bool(self.litellm_model) and _uses_direct_env_provider(self.litellm_model)
         if not self.llm_model_list and not has_direct_env_model:
-            issues.append(ConfigIssue(
-                severity="error",
-                message=(
-                    "未配置任何可用的 AI 模型接入（高级模型路由配置 / 渠道 / API Key），"
-                    "AI 分析功能将不可用"
-                ),
-                field="LITELLM_CONFIG",
-            ))
+            if self.litellm_config_path:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "已配置 LITELLM_CONFIG，但未解析出可用模型。"
+                        "请检查 YAML 中的 model_list、litellm_params 和环境变量引用。"
+                    ),
+                    field="LITELLM_CONFIG",
+                ))
+            elif self.llm_channel_names:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "已配置 LLM_CHANNELS，但未解析出可用模型渠道。"
+                        "请检查对应 LLM_<CHANNEL>_API_KEY(S)、"
+                        "LLM_<CHANNEL>_MODELS、LLM_<CHANNEL>_PROTOCOL 或 Base URL。"
+                    ),
+                    field="LLM_CHANNELS",
+                ))
+            else:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "未配置任何可用的 AI 模型接入。请至少配置 ANSPIRE_API_KEYS、"
+                        "AIHUBMIX_KEY、GEMINI_API_KEY、ANTHROPIC_API_KEY、"
+                        "OPENAI_API_KEY 或 DEEPSEEK_API_KEY 中的一个，或配置 "
+                        "LITELLM_CONFIG / LLM_CHANNELS 可用模型渠道。"
+                    ),
+                    field="LITELLM_CONFIG",
+                ))
         elif not self.litellm_model:
             issues.append(ConfigIssue(
                 severity="info",
@@ -2604,6 +2828,49 @@ class Config:
                 message="未配置通知渠道，将不发送推送通知",
                 field="WECHAT_WEBHOOK_URL",
             ))
+
+        has_telegram_token = bool((self.telegram_bot_token or "").strip())
+        has_telegram_chat_id = bool((self.telegram_chat_id or "").strip())
+        if has_telegram_token != has_telegram_chat_id:
+            issues.append(ConfigIssue(
+                severity="error",
+                message="Telegram 通知配置不完整：TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID 必须同时配置。",
+                field="TELEGRAM_CHAT_ID" if has_telegram_token else "TELEGRAM_BOT_TOKEN",
+            ))
+
+        has_email_sender = bool((self.email_sender or "").strip())
+        has_email_password = bool((self.email_password or "").strip())
+        if has_email_sender != has_email_password:
+            issues.append(ConfigIssue(
+                severity="error",
+                message="邮件通知配置不完整：EMAIL_SENDER 和 EMAIL_PASSWORD 必须同时配置。",
+                field="EMAIL_PASSWORD" if has_email_sender else "EMAIL_SENDER",
+            ))
+
+        def _warn_if_webhook_url_invalid(field: str, value: Optional[str]) -> None:
+            raw_url = (value or "").strip()
+            if not raw_url:
+                return
+            parsed = urlparse(raw_url)
+            if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+                return
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=f"{field} 看起来不是有效 URL，请确认是否以 http:// 或 https:// 开头。",
+                field=field,
+            ))
+
+        for field, value in (
+            ("WECHAT_WEBHOOK_URL", self.wechat_webhook_url),
+            ("FEISHU_WEBHOOK_URL", self.feishu_webhook_url),
+            ("DISCORD_WEBHOOK_URL", self.discord_webhook_url),
+            ("SLACK_WEBHOOK_URL", self.slack_webhook_url),
+            ("ASTRBOT_URL", self.astrbot_url),
+        ):
+            _warn_if_webhook_url_invalid(field, value)
+
+        for custom_url in self.custom_webhook_urls:
+            _warn_if_webhook_url_invalid("CUSTOM_WEBHOOK_URLS", custom_url)
 
         if self.ntfy_url and not _has_ntfy_topic_endpoint(self.ntfy_url):
             issues.append(ConfigIssue(

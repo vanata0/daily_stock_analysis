@@ -279,7 +279,7 @@ python main.py --check-notify
 
 ## Docker
 
-Docker 场景可通过 `--env-file .env` / Compose `env_file` 注入运行时环境变量，也可以挂载 `.env` 让 Web 设置页和后端读写同一份配置文件。只注入环境变量但不挂载 `.env` 时，Web 设置页保存后的值在容器重启后可能被部署环境再次覆盖。
+Docker 场景可通过 `--env-file .env` / Compose `env_file` 注入通知相关环境变量。不要把宿主机 `.env` 作为单文件 bind mount 覆盖容器内 `/app/.env`，否则 Web 设置页保存配置时可能因 Docker mount point 限制导致原子替换或权限问题。新版 Web 设置页会在活跃 `.env` 缺少某些键时展示启动注入的同名环境变量作为兜底；如果需要让 WebUI 保存后的通知配置在容器重建后继续保留，请将 `ENV_FILE` 指向 `/app/data/runtime.env` 等可写数据卷文件，并同步更新或移除启动环境中的同名旧值，避免重启后被覆盖。
 
 降噪静默时段建议显式配置 `NOTIFICATION_TIMEZONE`，避免容器默认时区与预期不一致。自签名内网 webhook 可临时使用 `WEBHOOK_VERIFY_SSL=false`，但不要在公网链路关闭证书校验。
 

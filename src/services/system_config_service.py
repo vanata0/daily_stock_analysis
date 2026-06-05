@@ -273,6 +273,9 @@ class SystemConfigService:
         if raw_value_exists:
             return raw_value
 
+        if field_schema.get("ui_control") == "switch" and raw_value:
+            return raw_value
+
         if field_schema.get("ui_control") == "switch":
             default_value = field_schema.get("default_value")
             if isinstance(default_value, str) and default_value:
@@ -303,9 +306,46 @@ class SystemConfigService:
 
         return keys
 
+    @classmethod
+    def _build_runtime_display_config_map(cls, saved_config_map: Dict[str, str]) -> Dict[str, str]:
+        """Return Web settings values injected through the process environment.
+
+        Docker ``env_file`` / ``--env-file`` only populate process environment
+        variables; they do not create an active ``.env`` file inside the
+        container. Use these values as display fallbacks so Settings can show
+        startup-injected config without letting it override later WebUI saves.
+        """
+        registered_keys = {key.upper() for key in get_registered_field_keys()}
+        channel_names = {
+            segment.strip().upper()
+            for raw_channels in (
+                saved_config_map.get("LLM_CHANNELS", ""),
+                os.environ.get("LLM_CHANNELS", ""),
+            )
+            for segment in raw_channels.split(",")
+            if segment.strip()
+        }
+        runtime_map: Dict[str, str] = {}
+
+        for raw_key, raw_value in os.environ.items():
+            key = str(raw_key).upper()
+            llm_channel_match = cls._WEB_SETTINGS_LLM_CHANNEL_SUPPORT_KEY_RE.match(key)
+            if (
+                key in registered_keys
+                or (llm_channel_match and llm_channel_match.group(1) in channel_names)
+            ):
+                runtime_map[key] = "" if raw_value is None else str(raw_value)
+
+        return cls._build_display_config_map(runtime_map)
+
     def get_config(self, include_schema: bool = True, mask_token: str = "******") -> Dict[str, Any]:
         """Return current config values without server-side secret masking."""
-        config_map = self._build_display_config_map(self._manager.read_config_map())
+        saved_config_map = self._build_display_config_map(self._manager.read_config_map())
+        runtime_config_map = self._build_runtime_display_config_map(saved_config_map)
+        config_map = {
+            **runtime_config_map,
+            **saved_config_map,
+        }
         registered_keys = set(get_registered_field_keys())
         all_keys = set(config_map.keys()) | registered_keys
         if include_schema:
@@ -323,7 +363,7 @@ class SystemConfigService:
 
         items: List[Dict[str, Any]] = []
         for key in all_keys:
-            raw_value_exists = key in config_map
+            raw_value_exists = key in saved_config_map
             raw_value = config_map.get(key, "")
             field_schema = schema_by_key[key]
             display_value = self._resolve_display_value(raw_value, field_schema, raw_value_exists)
@@ -776,7 +816,7 @@ class SystemConfigService:
         call_kwargs: Dict[str, Any] = {
             "model": resolved_model,
             "messages": [{"role": "user", "content": "Reply with OK"}],
-            "max_tokens": 256,  # Increased to allow MiniMax-M2.7 thinking process + response
+            "max_tokens": 256,  # Increased to allow MiniMax-M3 thinking process + response
             "timeout": max(5.0, float(timeout_seconds)),
         }
         if selected_api_key:
@@ -1609,8 +1649,13 @@ class SystemConfigService:
 
     def _collect_issues(self, items: Sequence[Dict[str, str]], mask_token: str) -> List[Dict[str, Any]]:
         """Collect field-level and cross-field validation issues."""
-        current_map = self._manager.read_config_map()
-        effective_map = dict(current_map)
+        saved_config_map = self._manager.read_config_map()
+        display_config_map = self._build_display_config_map(saved_config_map)
+        runtime_config_map = self._build_runtime_display_config_map(display_config_map)
+        effective_map = {
+            **runtime_config_map,
+            **display_config_map,
+        }
         issues: List[Dict[str, Any]] = []
         updated_map: Dict[str, str] = {}
 
@@ -1620,7 +1665,7 @@ class SystemConfigService:
             field_schema = get_field_definition(key, value)
             is_sensitive = bool(field_schema.get("is_sensitive", False))
 
-            if is_sensitive and value == mask_token and current_map.get(key):
+            if is_sensitive and value == mask_token and saved_config_map.get(key):
                 continue
 
             updated_map[key] = value

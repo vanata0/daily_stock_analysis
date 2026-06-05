@@ -1113,6 +1113,17 @@ class TestDecisionAgentChatMode(unittest.TestCase):
         self.assertIsNone(ctx.get_data("final_dashboard"))
         self.assertEqual(opinion.signal, "buy")
 
+    def test_decision_agent_prompt_requires_phase_decision(self):
+        from src.agent.agents.decision_agent import DecisionAgent
+
+        agent = DecisionAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+        prompt = agent.system_prompt(AgentContext(query="分析 600519", stock_code="600519"))
+
+        self.assertIn("phase_decision", prompt)
+        self.assertIn("watch_conditions", prompt)
+        self.assertIn("data_limitations", prompt)
+        self.assertIn("confidence_level", prompt)
+
 
 class TestTechnicalAgentSkillPolicy(unittest.TestCase):
     """TechnicalAgent should only receive the legacy trend baseline for implicit/default runs."""

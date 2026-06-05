@@ -126,7 +126,7 @@ export const alphasiftApi = {
   },
 
   async getStrategies(): Promise<AlphaSiftStrategiesResponse> {
-    const response = await apiClient.get<Record<string, unknown>>('/api/v1/alphasift/strategies');
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/alphasift/strategies', { timeout: ALPHASIFT_INSTALL_TIMEOUT_MS });
     return toCamelCase<AlphaSiftStrategiesResponse>(response.data);
   },
 
@@ -140,7 +140,11 @@ export const alphasiftApi = {
     try {
       const status = await alphasiftApi.getStatus();
       if (!status.available) {
-        throw new Error('AlphaSift 适配层当前不可用。桌面发布包应已内置 AlphaSift；源码部署请先在后端 Python 环境安装 AlphaSift 后再开启选股。');
+        await alphasiftApi.install();
+        const installedStatus = await alphasiftApi.getStatus();
+        if (!installedStatus.available) {
+          throw new Error('AlphaSift 自动安装完成，但适配层仍不可用。请检查后端 Python 环境和 AlphaSift 安装状态后重试。');
+        }
       }
     } catch (error) {
       try {

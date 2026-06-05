@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -811,6 +812,9 @@ class AlertApiTestCase(unittest.TestCase):
         self.assertEqual(trigger_payload["total"], 1)
         self.assertNotIn("secret-token", str(trigger_payload))
         self.assertNotIn("example.com/hook", str(trigger_payload))
+        self.assertIsNone(trigger_payload["items"][0]["market_phase_summary"])
+        self.assertIsNone(trigger_payload["items"][0]["analysis_context_pack_overview"])
+        self.assertEqual(trigger_payload["items"][0]["analysis_visibility_source"], "legacy_text")
 
         notification_resp = self.client.get("/api/v1/alerts/notifications", params={"channel": "wechat"})
         self.assertEqual(notification_resp.status_code, 200)
@@ -819,6 +823,57 @@ class AlertApiTestCase(unittest.TestCase):
         self.assertTrue(notification_payload["items"][0]["retryable"])
         self.assertNotIn("secret-token", str(notification_payload))
         self.assertNotIn("example.com/webhook", str(notification_payload))
+
+    def test_trigger_query_derives_analysis_visibility_from_json_diagnostics(self) -> None:
+        rule = self._create_rule()
+        diagnostics = {
+            "existing": "keep",
+            "analysis_visibility": {
+                "source": "analysis_history_snapshot",
+                "market_phase_summary": {
+                    "phase": "postmarket",
+                    "market": "cn",
+                    "trigger_source": "alert",
+                    "is_partial_bar": False,
+                },
+                "analysis_context_pack_overview": {
+                    "pack_version": "1.0",
+                    "subject": {"code": "600519", "market": "cn"},
+                    "data_quality": {
+                        "overall_score": 88,
+                        "level": "good",
+                        "limitations": ["news: missing"],
+                    },
+                    "blocks": [
+                        {"key": "quote", "label": "行情", "status": "available"},
+                        {"key": "news", "label": "新闻", "status": "missing"},
+                    ],
+                },
+            },
+        }
+        with self.db.get_session() as session:
+            session.add(
+                AlertTriggerRecord(
+                    rule_id=rule["id"],
+                    target="600519",
+                    observed_value=1810.0,
+                    threshold=1800.0,
+                    reason="breakout",
+                    data_source="unit-test",
+                    triggered_at=datetime(2026, 1, 1, 9, 30),
+                    status="triggered",
+                    diagnostics=json.dumps(diagnostics),
+                )
+            )
+            session.commit()
+
+        resp = self.client.get("/api/v1/alerts/triggers", params={"page": 1, "page_size": 10})
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        item = resp.json()["items"][0]
+        self.assertEqual(item["analysis_visibility_source"], "analysis_history_snapshot")
+        self.assertEqual(item["market_phase_summary"]["phase"], "postmarket")
+        self.assertEqual(item["analysis_context_pack_overview"]["data_quality"]["level"], "good")
 
     def test_alert_cooldowns_table_create_all_is_idempotent(self) -> None:
         constraint_names = {constraint.name for constraint in AlertCooldownRecord.__table__.constraints}

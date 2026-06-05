@@ -3004,6 +3004,37 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "SAVE_CONTEXT_SNAPSHOT": {
+        "title": "Save Context Snapshot",
+        "description": "Persist the full analysis_history.context_snapshot for history/API/Web transparency. Disable only to stop storing snapshots; it does not disable AnalysisContextPack prompt summaries during the current run.",
+        "category": "system",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 52,
+        "help_key": "settings.system.SAVE_CONTEXT_SNAPSHOT",
+        "examples": [
+            "SAVE_CONTEXT_SNAPSHOT=true",
+            "SAVE_CONTEXT_SNAPSHOT=false",
+            "python main.py --no-context-snapshot",
+        ],
+        "docs": [
+            {
+                "label": "AnalysisContextPack P6 文档、迁移与回滚",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/analysis-context-pack.md#p6-文档迁移与回滚",
+            },
+            {
+                "label": "完整指南：其他配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#其他配置",
+            },
+        ],
+        "warning_codes": [],
+    },
     "DEBUG": {
         "title": "Debug Mode",
         "description": "Enable debug mode with verbose logging.",

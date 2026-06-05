@@ -16,7 +16,7 @@ from src.agent.tools.data_tools import _handle_get_capital_flow
 class _DummyManagerOk:
     """Returns a well-formed capital flow context."""
 
-    def get_capital_flow_context(self, _stock_code: str):
+    def get_capital_flow_context(self, _stock_code: str, **_kwargs):
         return {
             "status": "ok",
             "data": {
@@ -37,14 +37,14 @@ class _DummyManagerOk:
 class _DummyManagerNotSupported:
     """Returns not_supported status (e.g. ETF or HK stock)."""
 
-    def get_capital_flow_context(self, _stock_code: str):
+    def get_capital_flow_context(self, _stock_code: str, **_kwargs):
         return {"status": "not_supported"}
 
 
 class _DummyManagerRaises:
     """Simulates a fetch failure."""
 
-    def get_capital_flow_context(self, _stock_code: str):
+    def get_capital_flow_context(self, _stock_code: str, **_kwargs):
         raise RuntimeError("network timeout")
 
 

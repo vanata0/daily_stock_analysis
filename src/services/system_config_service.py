@@ -1426,7 +1426,6 @@ class SystemConfigService:
         if reload_now:
             try:
                 Config.reset_instance()
-                self._reload_runtime_singletons()
                 setup_env(override=True)
                 config = Config.get_instance()
                 warnings.extend(config.validate())
@@ -1434,6 +1433,10 @@ class SystemConfigService:
             except Exception as exc:  # pragma: no cover - defensive branch
                 logger.error("Configuration reload failed: %s", exc, exc_info=True)
                 warnings.append("Configuration updated but reload failed")
+            try:
+                self._reload_runtime_singletons()
+            except Exception as exc:  # pragma: no cover - defensive branch
+                logger.warning("Runtime singleton reload failed (non-critical): %s", exc)
 
         warnings.extend(
             self._build_explainability_warnings(

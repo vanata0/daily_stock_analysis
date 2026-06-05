@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] `Config._load_from_env` 合并冲突导致 `agent_litellm_model` 未传入构造函数，修复 Agent 模型配置失效问题。
+- [修复] `HistoryService` 历史列表 TTL 缓存键未包含数据库路径，修复跨测试数据库污染导致分页结果错误的问题。
+- [修复] `SystemConfigService.update` 的 `_reload_runtime_singletons` 异常会阻断 `setup_env(override=True)` 执行，修复 WebUI 保存配置后进程环境变量残留旧值的问题。
+- [修复] `requirements.txt` 含中文注释导致 ASCII 解码测试失败，替换为英文注释。
+- [测试] 修复 `test_data_tools_get_capital_flow.py` Dummy Manager 缺少 `**_kwargs` 导致误判为 error 状态。
+
 - [新功能] 接入迈瑞数据（Mairuiapi）个股资金流向接口，支持特大/大/中/小单四档明细，作为东财 AkShare 的优先数据源；通过 `MAIRUI_API_KEY` 启用，未配置时自动 fallback 到原有东财接口。
 - [改进] AlphaSift 选股入口在 Web 侧边栏中移动到”问股”下方，贴近 Agent/研究辅助工作流。
 - [改进] Docker 镜像构建阶段预置默认 AlphaSift 适配层，与桌面发布包一样避免运行期额外安装。

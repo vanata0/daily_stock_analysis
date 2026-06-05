@@ -162,8 +162,9 @@ class HistoryService:
         Returns:
             Dictionary containing total count and items
         """
-        # --- TTL cache ---
-        _cache_key = (stock_code, start_date, end_date, page, limit)
+        # --- TTL cache (keyed per database URL to prevent cross-test pollution) ---
+        _db_url = getattr(self.db, '_db_url', None)
+        _cache_key = (_db_url, stock_code, start_date, end_date, page, limit)
         _now = time.time()
         if _cache_key in _history_list_cache:
             _exp, _cached = _history_list_cache[_cache_key]

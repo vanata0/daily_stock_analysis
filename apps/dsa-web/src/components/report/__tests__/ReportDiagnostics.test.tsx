@@ -80,11 +80,12 @@ describe('ReportDiagnostics', () => {
   });
 
   it('uses the provided summary without fetching history diagnostics', () => {
-    render(<ReportDiagnostics summary={diagnosticSummary} />);
+    render(<ReportDiagnostics summary={diagnosticSummary} language="en" />);
 
     expect(historyApi.getDiagnostics).not.toHaveBeenCalled();
-    expect(screen.getByText('运行状态')).toBeInTheDocument();
-    expect(screen.getByText('部分降级')).toBeInTheDocument();
+    expect(screen.getByText('Run Status')).toBeInTheDocument();
+    expect(screen.getByText('Degraded')).toBeInTheDocument();
+    expect(screen.getByText('Fetch / LLM / save / notification path')).toBeInTheDocument();
   });
 
   it('refetches diagnostics after StrictMode cleans up the first effect run', async () => {

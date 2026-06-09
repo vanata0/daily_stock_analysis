@@ -521,6 +521,42 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         gotify_with_message = next(check for check in status["checks"] if check["key"] == "notification")
         self.assertEqual(gotify_with_message["status"], "optional")
 
+    def test_get_setup_status_accepts_feishu_app_bot_triad(self) -> None:
+        self._rewrite_env(
+            "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+            "GEMINI_API_KEY=secret-key-value",
+            "STOCK_LIST=600519",
+            "FEISHU_APP_ID=cli_xxx",
+            "FEISHU_APP_SECRET=secret_xxx",
+            "FEISHU_CHAT_ID=oc_xxx",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            status = self.service.get_setup_status()
+
+        notification = next(check for check in status["checks"] if check["key"] == "notification")
+        self.assertEqual(notification["status"], "configured")
+
+    def test_get_setup_status_rejects_partial_feishu_app_bot_triad(self) -> None:
+        base_lines = [
+            "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+            "GEMINI_API_KEY=secret-key-value",
+            "STOCK_LIST=600519",
+        ]
+        partial_cases = [
+            ("FEISHU_APP_ID=cli_xxx", "FEISHU_APP_SECRET=secret_xxx"),
+            ("FEISHU_APP_ID=cli_xxx", "FEISHU_CHAT_ID=oc_xxx"),
+            ("FEISHU_APP_SECRET=secret_xxx", "FEISHU_CHAT_ID=oc_xxx"),
+        ]
+
+        for partial in partial_cases:
+            with self.subTest(partial=partial):
+                self._rewrite_env(*base_lines, *partial)
+                with patch.dict(os.environ, {}, clear=True):
+                    status = self.service.get_setup_status()
+                notification = next(check for check in status["checks"] if check["key"] == "notification")
+                self.assertEqual(notification["status"], "optional")
+
     def test_get_setup_status_uses_runtime_env_without_reloading_singletons(self) -> None:
         self._rewrite_env("")
 
@@ -691,7 +727,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             "OPENAI_BASE_URL=https://api.openai.com/v1",
             "LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,openai/gpt-4o",
             "ALPHASIFT_ENABLED=false",
-            "ALPHASIFT_INSTALL_SPEC=git+https://github.com/ZhuLinsen/alphasift.git@b2ca66dd47001b9a09890cfe21c2b18c7219ccf5",
+            "ALPHASIFT_INSTALL_SPEC=git+https://github.com/ZhuLinsen/alphasift.git@1a0ed8c99b3615c0cb1076e6029827ffc6de2344",
             "GEMINI_API_KEY=legacy-secret",
         )
 
@@ -715,7 +751,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(current_map["ALPHASIFT_ENABLED"], "true")
         self.assertEqual(
             current_map["ALPHASIFT_INSTALL_SPEC"],
-            "git+https://github.com/ZhuLinsen/alphasift.git@b2ca66dd47001b9a09890cfe21c2b18c7219ccf5",
+            "git+https://github.com/ZhuLinsen/alphasift.git@1a0ed8c99b3615c0cb1076e6029827ffc6de2344",
         )
         self.assertEqual(current_map["GEMINI_API_KEY"], "legacy-secret")
         self.assertEqual(current_map["LITELLM_MODEL"], "openai/gpt-4o-mini")
@@ -851,13 +887,16 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             ]
         )
         self.assertTrue(validation["valid"])
-        self.assertTrue(
-            any(
-                issue["code"] == "feishu_mode_mismatch"
-                and issue["severity"] == "warning"
-                for issue in validation["issues"]
-            )
+        issue = next(
+            issue
+            for issue in validation["issues"]
+            if issue["code"] == "feishu_mode_mismatch"
+            and issue["severity"] == "warning"
         )
+        self.assertEqual(issue["key"], "FEISHU_CHAT_ID")
+        self.assertIn("FEISHU_CHAT_ID", issue["message"])
+        self.assertIn("static notification:", issue["expected"])
+        self.assertIn("event subscription:", issue["expected"])
 
     def test_validate_no_warning_when_feishu_cloud_doc_credentials_without_webhook(self) -> None:
         validation = self.service.validate(
@@ -1472,6 +1511,60 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(payload["success"])
         self.assertEqual(payload["error_code"], "config_missing")
         self.assertIn("TELEGRAM_CHAT_ID", payload["message"])
+
+    def test_test_notification_channel_reports_nearest_feishu_app_bot_missing_key(self) -> None:
+        with self._notification_test_env():
+            payload = self.service.test_notification_channel(
+                channel="feishu",
+                items=[
+                    {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
+                    {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=3,
+            )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error_code"], "config_missing")
+        self.assertIn("FEISHU_CHAT_ID", payload["message"])
+        self.assertNotIn("FEISHU_WEBHOOK_URL", payload["message"])
+
+    def test_test_notification_channel_feishu_domain_draft_builds_isolated_config(self) -> None:
+        captured: Dict[str, Any] = {}
+
+        def fake_dispatch(**kwargs):
+            captured.update(kwargs)
+            return {
+                "success": True,
+                "message": "ok",
+                "error_code": None,
+                "stage": "notification_send",
+                "retryable": False,
+                "latency_ms": 0,
+                "attempts": [],
+            }
+
+        with self._notification_test_env(), patch.object(
+            SystemConfigService,
+            "_dispatch_notification_test",
+            side_effect=fake_dispatch,
+        ):
+            payload = self.service.test_notification_channel(
+                channel="feishu",
+                items=[
+                    {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
+                    {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
+                    {"key": "FEISHU_CHAT_ID", "value": "oc_xxx"},
+                    {"key": "FEISHU_DOMAIN", "value": "lark"},
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=3,
+            )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(captured["config"].feishu_domain, "lark")
 
     @patch("src.notification_sender.wechat_sender.requests.post")
     def test_test_notification_channel_skips_masked_secret_overwrite(self, mock_post) -> None:

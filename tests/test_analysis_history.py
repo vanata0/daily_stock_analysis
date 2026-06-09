@@ -26,11 +26,12 @@ except ModuleNotFoundError:
 try:
     from fastapi.testclient import TestClient
     from api.app import create_app
-    from api.v1.endpoints.history import get_history_detail
+    from api.v1.endpoints.history import get_history_detail, get_stock_bar
 except ModuleNotFoundError:
     TestClient = None
     create_app = None
     get_history_detail = None
+    get_stock_bar = None
 
 from src.config import Config
 from src.storage import DatabaseManager, AnalysisHistory, BacktestResult
@@ -345,6 +346,8 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(item["trend_prediction"], "看多")
         self.assertEqual(item["analysis_summary"], "基本面稳健，短期震荡")
         self.assertEqual(item["operation_advice"], "持有")
+        self.assertEqual(item["action"], "hold")
+        self.assertEqual(item["action_label"], "持有")
         self.assertEqual(item["model_used"], "gemini/gemini-2.5-pro")
         self.assertEqual(item["current_price"], 51.5)
         self.assertEqual(item["change_pct"], -4.61)
@@ -405,6 +408,8 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["items"][0]["stock_code"], "MARKET")
         self.assertEqual(payload["items"][0]["report_type"], "market_review")
+        self.assertIsNone(payload["items"][0]["action"])
+        self.assertIsNone(payload["items"][0]["action_label"])
 
     def test_distinct_stock_bar_excludes_market_review_records_by_default(self) -> None:
         """The stock bar aggregation should not mix MARKET into ordinary stock entries."""
@@ -444,6 +449,68 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         records = self.db.get_distinct_stocks_from_history(limit=10)
 
         self.assertEqual([record.code for record in records], ["600519"])
+
+    def test_stock_bar_item_derives_action_fields_from_legacy_advice(self) -> None:
+        if get_stock_bar is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        result.operation_advice = "不建议买入"
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_stock_bar_action",
+            report_type="detailed",
+            news_content="个股正文",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        response = get_stock_bar(
+            start_date=None,
+            end_date=None,
+            limit=10,
+            db_manager=self.db,
+        )
+
+        self.assertEqual(len(response.items), 1)
+        self.assertEqual(response.items[0].operation_advice, "不建议买入")
+        self.assertEqual(response.items[0].action, "avoid")
+        self.assertEqual(response.items[0].action_label, "回避")
+
+    def test_history_detail_uses_service_resolved_action_fields(self) -> None:
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        service = MagicMock()
+        service.resolve_and_get_detail.return_value = {
+            "id": 1,
+            "query_id": "query_action_conflict",
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "report_type": "detailed",
+            "report_language": "zh",
+            "created_at": "2026-05-21T17:40:00",
+            "sentiment_score": 45,
+            "operation_advice": "持有观察",
+            "action": "watch",
+            "action_label": "观望",
+            "trend_prediction": "震荡",
+            "analysis_summary": "等待确认",
+            "raw_result": {
+                "operation_advice": "持有观察",
+                "action": "watch",
+                "report_language": "zh",
+            },
+        }
+
+        with patch("api.v1.endpoints.history.HistoryService", return_value=service):
+            response = get_history_detail("query_action_conflict", db_manager=self.db)
+
+        self.assertEqual(response.summary.operation_advice, "持有观察")
+        self.assertEqual(response.summary.action, "watch")
+        self.assertEqual(response.summary.action_label, "观望")
 
     def test_history_list_matches_equivalent_suffixed_stock_codes(self) -> None:
         """Same-stock history should include rows saved with supported suffixed codes."""
@@ -1231,6 +1298,8 @@ class AnalysisHistoryTestCase(unittest.TestCase):
 
         self.assertEqual(report.meta.report_type, "market_review")
         self.assertEqual(report.summary.analysis_summary, report_content)
+        self.assertIsNone(report.summary.action)
+        self.assertIsNone(report.summary.action_label)
         self.assertEqual(report.details.news_content, report_content)
 
     def test_history_detail_localizes_english_summary_fields(self) -> None:
@@ -1271,6 +1340,8 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(report.meta.report_language, "en")
         self.assertEqual(report.meta.stock_name, "Unnamed Stock")
         self.assertEqual(report.summary.operation_advice, "Buy")
+        self.assertEqual(report.summary.action, "buy")
+        self.assertEqual(report.summary.action_label, "Buy")
         self.assertEqual(report.summary.trend_prediction, "Bullish")
         self.assertEqual(report.summary.sentiment_label, "Bullish")
 

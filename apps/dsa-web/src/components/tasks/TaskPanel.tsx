@@ -4,6 +4,7 @@ import { Badge, Card, StatusDot } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
 import type { TaskInfo } from '../../types/analysis';
 import { getRequestedPhaseLabel } from '../../utils/marketPhase';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
 /**
  * 任务项组件属性
@@ -16,14 +17,15 @@ interface TaskItemProps {
  * 单个任务项
  */
 const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
+  const { language, t } = useUiLanguage();
   const isPending = task.status === 'pending';
   const isProcessing = task.status === 'processing';
-  const statusLabel = isProcessing ? '分析中' : '等待中';
+  const statusLabel = isProcessing ? t('taskPanel.processing') : t('taskPanel.pending');
   const statusVariant = isProcessing ? 'info' : 'default';
   const statusTone = isProcessing ? 'info' : 'neutral';
   const progress = Math.max(0, Math.min(100, task.progress || 0));
   const traceId = (task.traceId || '').trim();
-  const requestedPhaseLabel = getRequestedPhaseLabel(task.analysisPhase, 'zh');
+  const requestedPhaseLabel = getRequestedPhaseLabel(task.analysisPhase, language);
   const requestedPhaseVariant = task.analysisPhase === 'auto' ? 'default' : 'info';
 
   return (
@@ -31,9 +33,9 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
       {/* 状态图标 */}
       <div className="shrink-0">
         {isProcessing ? (
-          <StatusDot tone="info" pulse className="h-2.5 w-2.5" aria-label="任务进行中" />
+          <StatusDot tone="info" pulse className="h-2.5 w-2.5" aria-label={t('taskPanel.processingAria')} />
         ) : isPending ? (
-          <StatusDot tone="neutral" className="h-2.5 w-2.5" aria-label="任务等待中" />
+          <StatusDot tone="neutral" className="h-2.5 w-2.5" aria-label={t('taskPanel.pendingAria')} />
         ) : null}
       </div>
 
@@ -73,7 +75,7 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
         {traceId ? (
           <details className="group/task mt-2 text-xs">
             <summary className="flex cursor-pointer list-none items-center gap-2 text-muted-text">
-              <span>运行诊断</span>
+              <span>{t('taskPanel.diagnostics')}</span>
               <span className="font-mono text-[11px] text-secondary-text">
                 {traceId.length > 18 ? `${traceId.slice(0, 10)}...` : traceId}
               </span>
@@ -94,7 +96,7 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
         <Badge
           variant={statusVariant}
           className="min-w-[4.75rem] justify-center gap-1.5 shadow-none"
-          aria-label={`任务状态：${statusLabel}`}
+          aria-label={t('taskPanel.statusAria', { status: statusLabel })}
         >
           <StatusDot tone={statusTone} pulse={isProcessing} className="h-1.5 w-1.5" />
           {statusLabel}
@@ -125,9 +127,10 @@ interface TaskPanelProps {
 export const TaskPanel: React.FC<TaskPanelProps> = ({
   tasks,
   visible = true,
-  title = '分析任务',
+  title,
   className = '',
 }) => {
+  const { t } = useUiLanguage();
   // 筛选活跃任务（pending 和 processing）
   const activeTasks = tasks.filter(
     (t) => t.status === 'pending' || t.status === 'processing'
@@ -150,7 +153,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
       <div className="border-b border-subtle px-3 py-3">
         <DashboardPanelHeader
           className="mb-0"
-          title={title}
+          title={title ?? t('taskPanel.title')}
           titleClassName="text-sm font-medium"
           leading={(
             <RefreshCw className="h-4 w-4 text-cyan" aria-hidden="true" />
@@ -161,13 +164,13 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
               {processingCount > 0 && (
                 <span className="flex items-center gap-1">
                   <StatusDot tone="info" pulse className="h-1.5 w-1.5" aria-label="进行中任务" />
-                  {processingCount} 进行中
+                  {t('taskPanel.processingTasks', { count: processingCount })}
                 </span>
               )}
               {pendingCount > 0 ? (
                 <span className="flex items-center gap-1">
                   <StatusDot tone="neutral" className="h-1.5 w-1.5" aria-label="等待中任务" />
-                  {pendingCount} 等待中
+                  {t('taskPanel.pendingTasks', { count: pendingCount })}
                 </span>
               ) : null}
             </div>

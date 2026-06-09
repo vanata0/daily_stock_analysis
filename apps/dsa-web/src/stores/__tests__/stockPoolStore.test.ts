@@ -262,7 +262,15 @@ describe('stockPoolStore', () => {
     });
   });
 
-  it('closes and resets same-stock trend state when selecting a market-review report', async () => {
+  it('loads market-review trend history when selecting a market-review report', async () => {
+    const marketItem = {
+      ...historyItem,
+      id: 10,
+      queryId: 'market-review-q-10',
+      stockCode: 'MARKET',
+      stockName: '大盘复盘',
+      reportType: 'market_review' as const,
+    };
     useStockPoolStore.setState({
       selectedReport: historyReport,
       isHistoryTrendOpen: true,
@@ -273,10 +281,10 @@ describe('stockPoolStore', () => {
     });
 
     vi.mocked(historyApi.getList).mockResolvedValue({
-      total: 0,
+      total: 1,
       page: 1,
       limit: 20,
-      items: [],
+      items: [marketItem],
     });
     vi.mocked(historyApi.getDetail).mockResolvedValue(marketReviewHistoryReport);
 
@@ -284,14 +292,19 @@ describe('stockPoolStore', () => {
 
     const state = useStockPoolStore.getState();
     expect(state.selectedReport?.meta.reportType).toBe('market_review');
-    expect(state.isHistoryTrendOpen).toBe(false);
-    expect(state.stockHistoryItems).toEqual([]);
-    expect(state.stockHistoryTotal).toBe(0);
+    expect(state.isHistoryTrendOpen).toBe(true);
+    expect(state.stockHistoryItems).toEqual([marketItem]);
+    expect(state.stockHistoryTotal).toBe(1);
     expect(state.stockHistoryPage).toBe(1);
     expect(state.stockHistoryHasMore).toBe(false);
     expect(state.isLoadingStockHistory).toBe(false);
     expect(state.isLoadingMoreStockHistory).toBe(false);
-    expect(historyApi.getList).not.toHaveBeenCalled();
+    expect(historyApi.getList).toHaveBeenCalledWith({
+      stockCode: 'MARKET',
+      reportType: 'market_review',
+      page: 1,
+      limit: 20,
+    });
   });
 
   it('loads market review history through the dedicated MARKET filter', async () => {

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { copyToClipboard } from '../../utils/clipboard';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
 interface JsonViewerProps {
   data: Record<string, unknown> | unknown[] | null | undefined;
@@ -16,11 +17,12 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
   maxHeight = '400px',
   className = '',
 }) => {
-  const [copied, setCopied] = useState<'copied' | 'error' | false>(false);
+  const [copied, setCopied] = useState(false);
+  const { t } = useUiLanguage();
 
   if (!data) {
     return (
-      <div className="text-gray-500 italic py-4 text-center">暂无数据</div>
+      <div className="text-gray-500 italic py-4 text-center">{t('common.noData')}</div>
     );
   }
 
@@ -28,8 +30,8 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
 
   const handleCopy = async () => {
     const ok = await copyToClipboard(jsonString);
-    setCopied(ok ? 'copied' : 'error');
-    setTimeout(() => setCopied(false), ok ? 2000 : 3000);
+    setCopied(ok);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   // 简单的语法高亮
@@ -75,7 +77,7 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
           bg-slate-700 hover:bg-slate-600 text-gray-300
           transition-colors z-10"
       >
-        {copied === 'copied' ? '已复制!' : copied === 'error' ? '失败' : '复制'}
+        {copied ? t('common.copied') : t('common.copy')}
       </button>
 
       {/* JSON 内容 */}

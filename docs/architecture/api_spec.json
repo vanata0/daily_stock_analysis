@@ -55,6 +55,28 @@
         }
       }
     },
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "根路径健康检查",
+        "description": "用于负载均衡器或监控系统检查服务状态；即使静态 Web 前端已构建，也返回 JSON 而不是 SPA HTML fallback。",
+        "operationId": "rootHealthCheck",
+        "responses": {
+          "200": {
+            "description": "服务健康",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "tags": [
@@ -63,6 +85,28 @@
         "summary": "健康检查",
         "description": "用于负载均衡器或监控系统检查服务状态",
         "operationId": "healthCheck",
+        "responses": {
+          "200": {
+            "description": "服务健康",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "v1 健康检查",
+        "description": "API v1 前缀下的健康检查接口，用于监控系统和客户端探测服务状态。",
+        "operationId": "v1HealthCheck",
         "responses": {
           "200": {
             "description": "服务健康",
@@ -1248,6 +1292,26 @@
           "operation_advice": {
             "type": "string"
           },
+          "action": {
+            "type": "string",
+            "description": "结构化建议动作 taxonomy",
+            "nullable": true,
+            "enum": [
+              "buy",
+              "add",
+              "hold",
+              "reduce",
+              "sell",
+              "watch",
+              "avoid",
+              "alert"
+            ]
+          },
+          "action_label": {
+            "type": "string",
+            "description": "建议动作展示标签",
+            "nullable": true
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -1300,6 +1364,26 @@
               "operation_advice": {
                 "type": "string",
                 "description": "操作建议"
+              },
+              "action": {
+                "type": "string",
+                "description": "结构化建议动作 taxonomy",
+                "nullable": true,
+                "enum": [
+                  "buy",
+                  "add",
+                  "hold",
+                  "reduce",
+                  "sell",
+                  "watch",
+                  "avoid",
+                  "alert"
+                ]
+              },
+              "action_label": {
+                "type": "string",
+                "description": "建议动作展示标签",
+                "nullable": true
               },
               "trend_prediction": {
                 "type": "string",

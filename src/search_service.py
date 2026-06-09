@@ -2126,6 +2126,8 @@ class SearchService:
     NEWS_OVERSAMPLE_FACTOR = 2
     NEWS_OVERSAMPLE_MAX = 10
     FUTURE_TOLERANCE_DAYS = 1
+    ANALYTICAL_INTEL_LOOKBACK_DAYS = 180
+    ANALYTICAL_INTEL_DIMENSIONS = {"market_analysis", "earnings"}
     _CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
     _US_STOCK_RE = re.compile(r"^[A-Za-z]{1,5}(\.[A-Za-z])?$")
     _DIRECT_NEWS_CATEGORY = "direct_company_news"
@@ -3023,6 +3025,7 @@ class SearchService:
         search_days: int,
         max_results: int,
         log_scope: str,
+        keep_unknown: bool = False,
     ) -> SearchResponse:
         """Hard-filter results by published_date recency and normalize date strings."""
         if not response.success or not response.results:
@@ -3040,6 +3043,22 @@ class SearchService:
         for item in response.results:
             published = self._normalize_news_publish_date(item.published_date)
             if published is None:
+                if keep_unknown:
+                    filtered.append(
+                        SearchResult(
+                            title=item.title,
+                            snippet=item.snippet,
+                            url=item.url,
+                            source=item.source,
+                            published_date=item.published_date,
+                            relevance_score=item.relevance_score,
+                            relevance_category=item.relevance_category,
+                            relevance_reasons=item.relevance_reasons,
+                        )
+                    )
+                    if len(filtered) >= max_results:
+                        break
+                    continue
                 dropped_unknown += 1
                 continue
             if published < earliest:
@@ -3568,10 +3587,33 @@ class SearchService:
             provider_max_results,
         )
         
-        # 选取要执行的维度（遵守 max_searches 上限）
-        available_providers = [p for p in self._providers if p.is_available]
-        if not available_providers:
-            return results
+        # 轮流使用不同的搜索引擎
+        provider_index = 0
+
+        for dim in search_dimensions:
+            if search_count >= max_searches:
+                break
+
+            # 选择搜索引擎（轮流使用）
+            available_providers = [p for p in self._providers if p.is_available]
+            if not available_providers:
+                break
+
+            provider = available_providers[provider_index % len(available_providers)]
+            provider_index += 1
+
+            request_days = (
+                self.ANALYTICAL_INTEL_LOOKBACK_DAYS
+                if dim['name'] in self.ANALYTICAL_INTEL_DIMENSIONS
+                else search_days
+            )
+
+            logger.info(
+                "[情报搜索] %s: 使用 %s，请求窗口: 近%s天",
+                dim['desc'],
+                provider.name,
+                request_days,
+            )
 
         dims_to_run = search_dimensions[:max_searches]
 
@@ -3598,20 +3640,28 @@ class SearchService:
                 resp = provider.search(
                     dim['query'],
                     max_results=provider_max_results,
-                    days=search_days,
+                    days=request_days,
                     topic=dim['tavily_topic'],
                 )
             else:
                 resp = provider.search(
                     dim['query'],
                     max_results=provider_max_results,
-                    days=search_days,
+                    days=request_days,
                 )
             if dim['strict_freshness']:
                 filtered = self._filter_news_response(
                     resp,
                     search_days=search_days,
                     max_results=provider_max_results,
+                    log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
+                )
+            elif dim['name'] in self.ANALYTICAL_INTEL_DIMENSIONS:
+                filtered_response = self._filter_news_response(
+                    response,
+                    search_days=self.ANALYTICAL_INTEL_LOOKBACK_DAYS,
+                    max_results=provider_max_results,
+                    keep_unknown=True,
                     log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
                 )
             else:

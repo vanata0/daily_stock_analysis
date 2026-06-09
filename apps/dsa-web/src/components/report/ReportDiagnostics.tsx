@@ -41,6 +41,7 @@ const TEXT = {
     advanced: '高级字段',
     copy: '复制排障信息',
     copied: '已复制',
+    scope: '抓取 / LLM / 保存 / 通知链路',
     trace: 'Trace',
     task: 'Task',
     query: 'Query',
@@ -70,6 +71,7 @@ const TEXT = {
     advanced: 'Advanced Fields',
     copy: 'Copy diagnostics',
     copied: 'Copied',
+    scope: 'Fetch / LLM / save / notification path',
     trace: 'Trace',
     task: 'Task',
     query: 'Query',
@@ -287,6 +289,9 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
               <StatusDot tone={statusStyle.tone} className="h-1.5 w-1.5" />
               {statusLabel}
             </Badge>
+            <span className="hidden home-accent-chip px-2 py-0.5 text-xs text-muted-text md:inline-flex">
+              {text.scope}
+            </span>
             <ChevronDown className="h-4 w-4 text-muted-text transition-transform group-open:rotate-180" aria-hidden="true" />
           </span>
         </summary>

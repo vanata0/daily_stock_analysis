@@ -2,6 +2,8 @@ import type React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApiError, createParsedApiError } from '../../api/error';
+import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import PortfolioPage from '../PortfolioPage';
 
 const {
@@ -200,6 +202,7 @@ async function waitForInitialLoad() {
 describe('PortfolioPage FX refresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
 
     getAccounts.mockResolvedValue(makeAccounts());
     getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => makeSnapshot({ accountId, fxStale: true }));
@@ -246,6 +249,15 @@ describe('PortfolioPage FX refresh', () => {
     });
   });
 
+  function renderEnglishPage() {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    render(
+      <UiLanguageProvider>
+        <PortfolioPage />
+      </UiLanguageProvider>,
+    );
+  }
+
   it('renders stale FX status with a manual refresh button', async () => {
     render(<PortfolioPage />);
 
@@ -253,6 +265,20 @@ describe('PortfolioPage FX refresh', () => {
 
     expect(await screen.findByText('过期')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '刷新汇率' })).toBeInTheDocument();
+  });
+
+  it('renders portfolio risk drawdown labels in English UI mode', async () => {
+    renderEnglishPage();
+
+    await waitForInitialLoad();
+
+    expect(await screen.findByText('Portfolio management')).toBeInTheDocument();
+    expect(screen.getByText('Drawdown monitor')).toBeInTheDocument();
+    expect(screen.getByText(/Max drawdown:/)).toBeInTheDocument();
+    expect(screen.getByText(/Current drawdown:/)).toBeInTheDocument();
+    expect(screen.getByText('Stop-loss proximity warning')).toBeInTheDocument();
+    expect(screen.getByText('Scope')).toBeInTheDocument();
+    expect(screen.queryByText('回撤监控')).not.toBeInTheDocument();
   });
 
   it('refreshes FX for a single selected account and only reloads snapshot/risk', async () => {

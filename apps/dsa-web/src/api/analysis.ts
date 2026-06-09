@@ -32,6 +32,7 @@ export const analysisApi = {
       original_query: data.originalQuery,
       selection_source: data.selectionSource,
       skills: data.skills,
+      report_language: data.reportLanguage,
       ...(data.notify !== undefined && { notify: data.notify }),
     };
 
@@ -67,6 +68,7 @@ export const analysisApi = {
       original_query: data.originalQuery,
       selection_source: data.selectionSource,
       skills: data.skills,
+      report_language: data.reportLanguage,
       ...(data.notify !== undefined && { notify: data.notify }),
     };
 
@@ -101,6 +103,7 @@ export const analysisApi = {
       '/api/v1/analysis/market-review',
       {
         send_notification: data.sendNotification ?? true,
+        report_language: data.reportLanguage,
       },
       {
         validateStatus: (status) => status === 202 || status === 409,

@@ -1,6 +1,6 @@
 """Regression tests for API schema metadata under Pydantic v2."""
 
-from api.v1.schemas.analysis import AnalyzeRequest
+from api.v1.schemas.analysis import AnalyzeRequest, MarketReviewRequest
 from api.v1.schemas.common import RootResponse
 from api.v1.schemas.history import HistoryItem
 from api.v1.schemas.stocks import StockQuote
@@ -34,6 +34,20 @@ def test_analyze_request_supports_legacy_strategies_dict_input() -> None:
     })
 
     assert request.skills == ["bull_trend", "growth_quality"]
+
+
+def test_request_models_accept_report_language_camel_case_alias() -> None:
+    analyze_request = AnalyzeRequest.model_validate({
+        "stock_code": "600519",
+        "reportLanguage": "en",
+    })
+    assert analyze_request.report_language == "en"
+
+    market_review_request = MarketReviewRequest.model_validate({
+        "send_notification": False,
+        "reportLanguage": "en",
+    })
+    assert market_review_request.report_language == "en"
 
 
 def test_analyze_request_analysis_phase_defaults_to_auto() -> None:

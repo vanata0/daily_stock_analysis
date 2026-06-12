@@ -24,6 +24,7 @@ const {
   parseCsvImport,
   commitCsvImport,
   createAccount,
+  deleteAccount,
   analyzePosition,
 } = vi.hoisted(() => ({
   getAccounts: vi.fn(),
@@ -43,6 +44,7 @@ const {
   parseCsvImport: vi.fn(),
   commitCsvImport: vi.fn(),
   createAccount: vi.fn(),
+  deleteAccount: vi.fn(),
   analyzePosition: vi.fn(),
 }));
 
@@ -65,6 +67,7 @@ vi.mock('../../api/portfolio', () => ({
     parseCsvImport,
     commitCsvImport,
     createAccount,
+    deleteAccount,
     analyzePosition,
   },
 }));
@@ -240,6 +243,7 @@ describe('PortfolioPage FX refresh', () => {
       errors: [],
     });
     createAccount.mockResolvedValue({ id: 1 });
+    deleteAccount.mockResolvedValue({ deleted: 1 });
     analyzePosition.mockResolvedValue({
       taskId: 'task-portfolio-1',
       traceId: 'task-portfolio-1',
@@ -619,5 +623,32 @@ describe('PortfolioPage FX refresh', () => {
     expect(getSnapshot).toHaveBeenCalledTimes(snapshotCallsAfterSwitch);
     expect(getRisk).toHaveBeenCalledTimes(riskCallsAfterSwitch);
     expect(screen.queryByText('汇率已刷新，共更新 1 对。')).not.toBeInTheDocument();
+  });
+
+  it('deactivates the selected account from the account toolbar and reloads accounts', async () => {
+    getAccounts
+      .mockResolvedValueOnce(makeAccounts([{ id: 1, name: 'Main' }, { id: 2, name: 'Alt' }]))
+      .mockResolvedValueOnce(makeAccounts([{ id: 2, name: 'Alt' }]));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除账户' }));
+
+    const dialog = await screen.findByText('删除持仓账户');
+    expect(dialog.closest('[role="dialog"]') ?? document.body).toHaveTextContent(
+      '删除后该账户会从默认列表、快照、风险和录入入口隐藏',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+
+    await waitFor(() => expect(deleteAccount).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(getAccounts).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText('Main (#1)')).not.toBeInTheDocument());
+    expect(screen.getByRole('option', { name: 'Alt (#2)' })).toBeInTheDocument();
   });
 });

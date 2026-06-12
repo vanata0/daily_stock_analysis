@@ -65,6 +65,11 @@ type PendingDelete =
   | { eventType: 'cash'; id: number; message: string }
   | { eventType: 'corporate'; id: number; message: string };
 
+type PendingAccountDelete = {
+  accountId: number;
+  accountName: string;
+};
+
 type FxRefreshContext = {
   viewKey: string;
   requestId: number;
@@ -134,6 +139,8 @@ const PortfolioPage: React.FC = () => {
   const [corporateEvents, setCorporateEvents] = useState<PortfolioCorporateActionListItem[]>([]);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [pendingAccountDelete, setPendingAccountDelete] = useState<PendingAccountDelete | null>(null);
+  const [accountDeleteLoading, setAccountDeleteLoading] = useState(false);
 
   const [tradeForm, setTradeForm] = useState({
     symbol: '',
@@ -169,6 +176,7 @@ const PortfolioPage: React.FC = () => {
   const writableAccount = selectedAccount === 'all' ? undefined : accounts.find((item) => item.id === selectedAccount);
   const writableAccountId = writableAccount?.id;
   const writeBlocked = !writableAccountId;
+  const canDeleteSelectedAccount = Boolean(writableAccountId) && !isLoading && !fxRefreshing && !accountDeleteLoading;
   const totalEventPages = Math.max(1, Math.ceil(eventTotal / DEFAULT_PAGE_SIZE));
   const currentEventCount = eventType === 'trade'
     ? tradeEvents.length
@@ -530,6 +538,37 @@ const PortfolioPage: React.FC = () => {
     setPendingDelete(item);
   };
 
+  const openAccountDeleteDialog = () => {
+    if (!writableAccount) {
+      setWriteWarning('请先选择具体账户，再删除持仓账户。');
+      return;
+    }
+    setPendingAccountDelete({
+      accountId: writableAccount.id,
+      accountName: writableAccount.name,
+    });
+  };
+
+  const handleConfirmAccountDelete = async () => {
+    if (!pendingAccountDelete || accountDeleteLoading) return;
+
+    try {
+      setAccountDeleteLoading(true);
+      setWriteWarning(null);
+      await portfolioApi.deleteAccount(pendingAccountDelete.accountId);
+      const nextAccount = accounts.find((item) => item.id !== pendingAccountDelete.accountId);
+      setSelectedAccount(nextAccount?.id ?? 'all');
+      setPendingAccountDelete(null);
+      setShowCreateAccount(!nextAccount);
+      await loadAccounts();
+      setEventPage(1);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setAccountDeleteLoading(false);
+    }
+  };
+
   const handleConfirmDelete = async () => {
     if (!pendingDelete || deleteLoading) return;
     if (!writableAccountId) {
@@ -739,7 +778,7 @@ const PortfolioPage: React.FC = () => {
                   <option value="avg">{text.avg}</option>
                 </select>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   className="btn-secondary text-sm flex-1"
@@ -758,6 +797,14 @@ const PortfolioPage: React.FC = () => {
                   className="btn-secondary text-sm flex-1"
                 >
                   {isLoading ? text.refreshing : text.refreshData}
+                </button>
+                <button
+                  type="button"
+                  onClick={openAccountDeleteDialog}
+                  disabled={!canDeleteSelectedAccount}
+                  className="btn-secondary text-sm flex-1 border-red-400/40 text-red-100 hover:bg-red-500/15 disabled:border-white/10 disabled:text-secondary"
+                >
+                  {accountDeleteLoading ? text.deletingAccount : text.deleteAccount}
                 </button>
               </div>
             </div>
@@ -1339,6 +1386,26 @@ const PortfolioPage: React.FC = () => {
         onCancel={() => {
           if (!deleteLoading) {
             setPendingDelete(null);
+          }
+        }}
+      />
+      <ConfirmDialog
+        isOpen={Boolean(pendingAccountDelete)}
+        title={text.deleteAccountTitle}
+        message={
+          pendingAccountDelete
+            ? formatUiText(text.deleteAccountMessage, {
+              name: pendingAccountDelete.accountName,
+              id: pendingAccountDelete.accountId,
+            })
+            : ''
+        }
+        confirmText={accountDeleteLoading ? text.deletingAccount : text.deleteAccountConfirm}
+        isDanger
+        onConfirm={() => void handleConfirmAccountDelete()}
+        onCancel={() => {
+          if (!accountDeleteLoading) {
+            setPendingAccountDelete(null);
           }
         }}
       />

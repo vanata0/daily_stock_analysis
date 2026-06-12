@@ -53,6 +53,7 @@ from api.v1.schemas.history import (
     ReportStrategy,
     ReportDetails,
 )
+from api.v1.schemas.run_flow import RunFlowSnapshot
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import Config
 from src.core.market_review_lock import (
@@ -79,6 +80,7 @@ from src.services.task_queue import (
     TaskStatus as TaskStatusEnum,
 )
 from src.services.run_diagnostics import build_run_diagnostic_summary
+from src.services.run_flow import build_task_run_flow_snapshot
 from src.utils.data_processing import (
     normalize_model_used,
     parse_json_field,
@@ -550,7 +552,7 @@ def trigger_market_review(
 def get_task_list(
     status: Optional[str] = Query(
         None,
-        description="筛选状态：pending, processing, completed, failed（支持逗号分隔多个）"
+        description="筛选状态：pending, processing, completed, failed, cancel_requested, cancelled（支持逗号分隔多个）"
     ),
     limit: int = Query(20, description="返回数量限制", ge=1, le=100),
 ) -> TaskListResponse:
@@ -691,6 +693,70 @@ def _format_sse_event(event_type: str, data: Dict[str, Any]) -> str:
         SSE 格式字符串
     """
     return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _load_history_run_flow_by_query_id(
+    query_id: str,
+    *,
+    fail_open: bool = False,
+) -> Optional[RunFlowSnapshot]:
+    try:
+        from src.storage import DatabaseManager
+        from src.services.history_service import HistoryService
+
+        service = HistoryService(DatabaseManager.get_instance())
+        return service.resolve_and_get_run_flow(query_id)
+    except Exception as e:
+        if fail_open:
+            logger.debug(
+                "load history run-flow failed, falling back to task skeleton: query_id=%s err=%s",
+                query_id,
+                e,
+            )
+            return None
+        raise
+
+
+@router.get(
+    "/tasks/{task_id}/flow",
+    response_model=RunFlowSnapshot,
+    responses={
+        200: {"description": "任务运行流快照"},
+        404: {"description": "任务不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取分析任务运行流",
+    description="根据 task_id 查询任务数据流/信息流快照；活跃任务缺少诊断时返回骨架流。",
+)
+def get_task_run_flow(task_id: str) -> RunFlowSnapshot:
+    """
+    查询分析任务运行流。
+
+    Active tasks are served from the in-memory task queue. Completed tasks try
+    to hydrate from persisted history diagnostics using the same task_id/query_id.
+    """
+    task_queue = get_task_queue()
+    task = task_queue.get_task(task_id)
+
+    if task:
+        if task.status == TaskStatusEnum.COMPLETED:
+            history_snapshot = _load_history_run_flow_by_query_id(
+                task_id,
+                fail_open=True,
+            )
+            if history_snapshot is not None:
+                return history_snapshot
+        return build_task_run_flow_snapshot(task)
+
+    try:
+        history_snapshot = _load_history_run_flow_by_query_id(task_id)
+        if history_snapshot is not None:
+            return history_snapshot
+    except Exception as e:
+        logger.error(f"查询任务运行流失败: {e}", exc_info=True)
+        raise api_error(500, "internal_error", f"查询任务运行流失败: {str(e)}")
+
+    raise api_error(404, "not_found", f"任务 {task_id} 不存在或已过期")
 
 
 def _datetime_to_iso(value: Any) -> Optional[str]:

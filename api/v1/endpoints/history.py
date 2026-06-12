@@ -33,6 +33,7 @@ from api.v1.schemas.history import (
     StockBarResponse,
 )
 from api.v1.schemas.common import ErrorResponse
+from api.v1.schemas.run_flow import RunFlowSnapshot
 from src.storage import DatabaseManager
 from src.report_language import (
     get_sentiment_label,
@@ -533,6 +534,49 @@ def get_history_diagnostics(
             detail={
                 "error": "internal_error",
                 "message": f"查询运行诊断摘要失败: {str(e)}",
+            },
+        )
+
+
+@router.get(
+    "/{record_id}/flow",
+    response_model=RunFlowSnapshot,
+    responses={
+        200: {"description": "运行流快照"},
+        404: {"description": "报告不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取历史报告运行流",
+    description="根据分析历史记录 ID 或 query_id 获取数据流/信息流快照。",
+)
+def get_history_run_flow(
+    record_id: str,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> RunFlowSnapshot:
+    """
+    获取历史报告运行流。
+    """
+    try:
+        service = HistoryService(db_manager)
+        snapshot = service.resolve_and_get_run_flow(record_id)
+        if snapshot is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "not_found",
+                    "message": f"未找到 id/query_id={record_id} 的分析记录",
+                },
+            )
+        return snapshot
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"查询运行流快照失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": f"查询运行流快照失败: {str(e)}",
             },
         )
 

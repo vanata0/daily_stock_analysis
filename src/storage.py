@@ -19,7 +19,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar, Union
 
 import pandas as pd
@@ -64,6 +64,18 @@ Base = declarative_base()
 
 if TYPE_CHECKING:
     from src.search_service import SearchResponse
+
+
+def utc_naive_now() -> datetime:
+    """Return current UTC time without tzinfo for SQLite DateTime columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def to_utc_naive_datetime(value: datetime) -> datetime:
+    """Normalize aware datetimes to UTC-naive; treat naive values as UTC-naive."""
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 # === 数据模型定义 ===
@@ -771,6 +783,70 @@ class AlertCooldownRecord(Base):
 
     __table_args__ = (
         UniqueConstraint('rule_id', 'target', 'severity', name='uix_alert_cooldown_rule_target_severity'),
+    )
+
+
+class DecisionSignalRecord(Base):
+    """Persisted AI decision signal asset for Issue #1390 P1."""
+
+    __tablename__ = 'decision_signals'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(16), nullable=False, index=True)
+    stock_name = Column(String(64))
+    market = Column(String(8), nullable=False, index=True)
+    source_type = Column(String(32), nullable=False, index=True)
+    source_agent = Column(String(64))
+    source_report_id = Column(Integer, index=True)
+    trace_id = Column(String(64), index=True)
+    market_phase = Column(String(24), index=True)
+    trigger_source = Column(String(64), nullable=False, index=True)
+    action = Column(String(16), nullable=False, index=True)
+    action_label = Column(String(32))
+    confidence = Column(Float)
+    score = Column(Integer)
+    horizon = Column(String(16), index=True)
+    entry_low = Column(Float)
+    entry_high = Column(Float)
+    stop_loss = Column(Float)
+    target_price = Column(Float)
+    invalidation = Column(Text)
+    watch_conditions = Column(Text)
+    reason = Column(Text)
+    risk_summary = Column(Text)
+    catalyst_summary = Column(Text)
+    evidence_json = Column(Text)
+    data_quality_summary_json = Column(Text)
+    plan_quality = Column(String(16), nullable=False, default='unknown', index=True)
+    status = Column(String(16), nullable=False, default='active', index=True)
+    expires_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+    metadata_json = Column(Text)
+
+    __table_args__ = (
+        Index('ix_decision_signal_stock_status_time', 'stock_code', 'status', 'created_at'),
+        Index('ix_decision_signal_market_status_time', 'market', 'status', 'created_at'),
+        Index(
+            'ix_decision_signal_report_type_market_stock_action_horizon_phase',
+            'source_report_id',
+            'source_type',
+            'market',
+            'stock_code',
+            'action',
+            'horizon',
+            'market_phase',
+        ),
+        Index(
+            'ix_decision_signal_trace_type_market_stock_action_horizon_phase',
+            'trace_id',
+            'source_type',
+            'market',
+            'stock_code',
+            'action',
+            'horizon',
+            'market_phase',
+        ),
     )
 
 
@@ -1633,7 +1709,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """
         删除指定的分析历史记录。
 
-        同时清理依赖这些历史记录的回测结果，避免外键约束失败。
+        同时清理依赖这些历史记录的回测结果和分析来源决策信号，避免
+        依赖历史记录的派生数据残留。DecisionSignal 的 source_report_id
+        允许弱引用，因此这里只清理 source_type=analysis 的真实历史绑定信号。
 
         Args:
             record_ids: 要删除的历史记录主键 ID 列表
@@ -1646,11 +1724,27 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             return 0
 
         with self.session_scope() as session:
+            existing_ids = sorted(
+                session.execute(
+                    select(AnalysisHistory.id).where(AnalysisHistory.id.in_(ids))
+                ).scalars().all()
+            )
+            if not existing_ids:
+                return 0
+
             session.execute(
-                delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(ids))
+                delete(DecisionSignalRecord).where(
+                    and_(
+                        DecisionSignalRecord.source_type == "analysis",
+                        DecisionSignalRecord.source_report_id.in_(existing_ids),
+                    )
+                )
+            )
+            session.execute(
+                delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(existing_ids))
             )
             result = session.execute(
-                delete(AnalysisHistory).where(AnalysisHistory.id.in_(ids))
+                delete(AnalysisHistory).where(AnalysisHistory.id.in_(existing_ids))
             )
             return result.rowcount or 0
 

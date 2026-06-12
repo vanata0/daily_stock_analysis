@@ -1128,7 +1128,29 @@ The `decision_type` bridge in the table only documents compatibility between the
 
 Unknown or ambiguous advice is not coerced into `watch` or `hold`; it returns empty `action/action_label`. Web history cards, StockBar, same-stock history drawers, and backtest result rows use `operation_advice` as a display-only fallback when old records do not have `action/action_label`; that fallback affects only the UI label and is not a stable API action or future signal asset. When Web receives both `action` and `action_label`, it first renders the label from `action` in the current UI language; API `action_label` remains report-language display metadata for non-Web clients or compatibility display when `action` is absent. Market review and other non-stock reports do not emit trading `action` values and keep only the `operation_advice` text. `dashboard.phase_decision.immediate_action` belongs to the market-phase guardrail report block and is not used by the #1390 P0 eight-state action derivation. The final market phase still comes from `report.meta.market_phase_summary.phase`.
 
-#1390 P0 does not define or emit future signal-asset fields. More granular plan fields such as `horizon`, `plan_quality`, and `status` are left for a separate follow-up design. This phase does not flatten them into current report summaries, history lists, StockBar rows, or backtest responses; it adds no DB migration, no historical backfill, and no new configuration.
+#1390 P0 does not flatten future signal-asset fields into current report summaries, history lists, StockBar rows, or backtest responses. #1390 P1 now carries more granular plan fields such as `horizon`, `plan_quality`, and `status` through an independent `DecisionSignal` resource; it still does not change the existing report contract, backfill history, or add configuration.
+
+### Decision Signal Asset (#1390 P1)
+
+`DecisionSignal` is an independent backend resource for persisting AI recommendations as queryable, deduplicated, status-updatable signal assets. It does not replace `operation_advice`, does not expand the legacy `decision_type=buy|hold|sell` contract, and does not auto-extract from existing reports yet; before P2, signals are written only through explicit API or service calls.
+
+Core fields include `stock_code`, `stock_name`, `market`, `source_type`, `source_agent`, `source_report_id`, `trace_id`, `market_phase`, `trigger_source`, `action`, `action_label`, `confidence`, `score`, `horizon`, `entry_low`, `entry_high`, `stop_loss`, `target_price`, `invalidation`, `watch_conditions`, `reason`, `risk_summary`, `catalyst_summary`, `evidence`, `data_quality_summary`, `plan_quality`, `status`, `expires_at`, `created_at`, `updated_at`, and `metadata`. `action` reuses the eight-state action taxonomy; `market_phase` reuses the market phase enum; `source_type` supports `analysis|agent|alert|market_review|manual`; `status` supports `active|expired|invalidated|closed|archived`; `horizon` supports `intraday|1d|3d|5d|10d|swing|long`.
+
+`confidence` is `0.0-1.0`, and `score` is `0-100`, separate from historical `sentiment_score`. Price-plan fields `entry_low`, `entry_high`, `stop_loss`, and `target_price` must be finite positive numbers; when both `entry_low` and `entry_high` are present, `entry_low <= entry_high` is required. `plan_quality` supports `complete|partial|minimal|unknown`: a valid explicit value is saved as-is; otherwise the service computes it. The entry range (`entry_low` or `entry_high`) counts as one slot, and `stop_loss`, `target_price`, `invalidation`, and `watch_conditions` each count as one slot. Two slots produce `partial`, four or more produce `complete`, and action/reason without enough slots produces `minimal`.
+
+New API endpoints:
+
+- `POST /api/v1/decision-signals`: create or deduplicate a signal and return `{ item, created }` with HTTP 200. Deduplication uses `(source_report_id, source_type, market, stock_code, action, horizon, market_phase)` when `source_report_id` is present, or `(trace_id, source_type, market, stock_code, action, horizon, market_phase)` when only `trace_id` is present. Signals without either source identifier are not deduplicated. `source_type` is a source namespace, so manual/pre-report weak references do not deduplicate against real analysis-bound signals. `NULL` `horizon` and `NULL` `market_phase` deduplicate only against the same `NULL` dimensions; different source types, markets, horizons, or market phases may persist as separate signals. When the same source key matches an expired signal and the new request is active with a future `expires_at`, the existing row is refreshed in place and still returns `created=false`. P1 does not guarantee concurrent idempotency.
+- `GET /api/v1/decision-signals`: paginated query with `market`, `stock_code`, `action`, `market_phase`, `source_type`, `source_report_id`, `trace_id`, `trigger_source`, `status`, time ranges, `holding_only`, and `account_id`.
+- `GET /api/v1/decision-signals/{signal_id}`: fetch one signal; missing IDs return 404.
+- `PATCH /api/v1/decision-signals/{signal_id}/status`: update a valid status and optional `metadata`; when `metadata` is provided it replaces the whole stored metadata object, and no complex state machine is enforced.
+- `GET /api/v1/decision-signals/latest/{stock_code}`: return latest active signals for a stock, default `limit=1`.
+
+Read paths lazily expire active signals whose `expires_at` has passed before list, detail, and latest queries; creating an already expired active signal stores it as `expired`; the same-source expired signal can only be extended by re-posting active data with a future `expires_at`, and `PATCH /status` does not accept `expires_at`. `closed|invalidated|archived` signals are not reactivated by the create path. Time fields are normalized to UTC naive datetimes for storage and comparison; timezone-aware inputs are converted to UTC and stripped of `tzinfo`, naive inputs are treated as UTC, and API responses continue to return ISO strings without timezone suffixes. Stock codes are normalized deterministically by `market`: CN variants such as `600519`, `SH600519`, and `600519.SH` match the same stored code; HK variants such as `00700`, `HK00700`, and `00700.HK` match `HK00700`; US tickers are uppercased. `holding_only=true` reads only cached `portfolio_positions` rows with `quantity > 0` under active accounts and matches signals by the held `(market, stock_code)`, optionally scoped by an active `account_id`; it does not call portfolio snapshot replay. When no cache exists, it returns an empty result and callers should refresh the cache through the portfolio snapshot API first.
+
+`source_report_id` is nullable and is not required to reference an existing history row; deleting history records explicitly removes only history-bound signals with `source_type=analysis` whose `source_report_id` matches actually deleted IDs, so `manual/agent/alert/market_review` weak-reference signals are not deleted solely because of an ID collision. The list endpoint supports typed filters for `source_report_id` and `trace_id`. Follow-up association fields such as `task_id` and `alert_trigger_id` should be stored in `metadata` for P1; P1 does not add dedicated columns or typed filters for them, which are deferred to the later integration phase. JSON fields, long text fields, and public short text fields (`stock_name/source_agent/trigger_source/action_label`) are sanitized before persistence with a signal-specific sanitizer that redacts sensitive keys, Bearer values, Authorization/Cookie headers or assignments, token-like strings, other sensitive assignments, webhook URLs, URL userinfo, and URLs with sensitive query or fragment parameters. Ordinary evidence URLs are preserved for source traceability, and long text does not use the diagnostics 300-character truncation. `trace_id` is a same-source identity field; if it contains sensitive credentials that would be redacted, the API rejects the request instead of storing a lossy redacted value.
+
+These endpoints inherit the existing `/api/v1/*` admin authentication middleware: when `ADMIN_AUTH_ENABLED=true`, callers must send a valid admin session cookie. DecisionSignal does not add a separate auth scheme.
 
 ## Backtesting
 
@@ -1208,6 +1230,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 - **Market review history dedicated entry** - Market review history is shown in a dedicated history entry and isolated from regular stock history; use `stock_code=MARKET` and `report_type=market_review` to view and replay only market-review records.
 - **Market review history replay** - Market review results are persisted with `report_type=market_review` and can be reopened from history list/detail or Markdown endpoints directly, without re-triggering a fresh analysis run.
 - **Input data-block visibility** - Regular analysis reports expose a low-sensitivity `AnalysisContextPack` overview through history details, sync responses, and completed task status; the Web report page shows the data-block summary collapsed after Strategy and News, with block status, source, missing reasons, and fallback summaries available on expansion.
+- **Ask-stock follow-up context** - When Ask Stock is opened from a historical report, follow-up messages keep sending the active `stock_code/stock_name`; reopening an existing chat can recover the base stock from loaded user messages, and comparison-style prompts do not overwrite the current stock context.
 - **Backtest Validation** - Evaluate historical analysis accuracy, query direction win rate and simulated returns
 - **API Documentation** - Visit `/docs` for Swagger UI
 
@@ -1233,6 +1256,11 @@ For this feature, the product behavior is:
 | `/api/v1/alphasift/screen/tasks/{task_id}` | GET | Query AlphaSift screening task status and completed result |
 | `/api/v1/history` | GET | Query analysis history |
 | `/api/v1/history/{record_id}/diagnostics` | GET | Query a historical report run diagnostic summary and sanitized copy text |
+| `/api/v1/decision-signals` | POST | Explicitly create or deduplicate a decision signal and return `{ item, created }` |
+| `/api/v1/decision-signals` | GET | Paginated decision-signal query with stock, market, action, phase, source, status, time-range, and cache-only holdings filters |
+| `/api/v1/decision-signals/{signal_id}` | GET | Fetch one decision signal and apply lazy expiration before reading |
+| `/api/v1/decision-signals/{signal_id}/status` | PATCH | Update a decision signal status and optional metadata |
+| `/api/v1/decision-signals/latest/{stock_code}` | GET | Query the latest active decision signals for a stock |
 | `/api/v1/usage/summary?period=today|month|all` | GET | Query LLM call counts and token usage grouped by call type and model |
 | `/api/v1/backtest/run` | POST | Trigger backtest |
 | `/api/v1/backtest/results` | GET | Query backtest results (paginated) |
@@ -1259,6 +1287,7 @@ For this feature, the product behavior is:
 > Note: `GET /api/v1/history` list summaries can be paginated by `stock_code` for same-stock history and now include optional trend, summary, model, and analysis-time price/change fields. Older rows without persisted snapshots return empty values. The Web report page's "History Trend" drawer reuses this endpoint.
 > Issue #1520 compatibility note: The `model`/`model_used` returned here is read-only historical snapshot metadata from each record, used only for trend drawer/history display. It does not alter runtime model/model-provider/base URL resolution, config migration, or cleanup semantics in the analysis path. Rollback is by reverting this commit; history query, API response shapes, and UI drawer consumption remain compatible.
 > Note: history detail, sync analysis responses, and completed task status responses expose a low-sensitivity input data-block overview at `report.details.analysis_context_pack_overview`; sync analysis responses depend on the just-persisted `analysis_history.context_snapshot`, so new records do not guarantee the overview when `SAVE_CONTEXT_SNAPSHOT=false`. `details.context_snapshot` strips that top-level field and does not return the full `AnalysisContextPack` or prompt summary.
+> Note: `POST /api/v1/agent/chat` and `POST /api/v1/agent/chat/stream` use the frontend-provided `context.stock_code` as the active Ask Stock baseline only after server-side stock-scope resolution. Each turn is classified as `maintain`, `switch`, or `compare`: unchanged follow-ups can call stock-scoped tools only for the current stock; explicit switches clear stale stock summaries and prefetched context; comparison prompts such as compare/vs/difference allow the explicitly mentioned codes for that turn without rewriting the current stock. If a model attempts to call a stock tool with financial abbreviations such as TTM, PE, MACD, KDJ, contextual indicator tokens such as `MA` in moving-average prompts, or exchange fragments such as SH/SZ/BJ/HK/SS, the backend returns a non-retriable `stock_scope_violation` tool result instead of executing that stock tool. Tool names are resolved only by exact registry name; provider namespaces or suffixes are not routed to existing tools.
 
 > Compatibility audit evidence:
 > - Official references: LiteLLM OpenAI-compatible provider documentation <https://docs.litellm.ai/docs/providers/openai_compatible>, OpenAI Chat API <https://platform.openai.com/docs/api-reference/chat/create>, and DeepSeek API docs <https://api-docs.deepseek.com/>.
@@ -1356,6 +1385,12 @@ A: Check if Actions is enabled, and if cron expression is correct (note it's UTC
 ---
 
 ## Portfolio Web Notes
+
+### Portfolio account archive on `/portfolio`
+
+- The `/portfolio` account toolbar can delete a selected single account through the existing `DELETE /api/v1/portfolio/accounts/{account_id}` endpoint.
+- Account deletion uses soft-delete/archive semantics. Archived accounts are hidden from default account lists, portfolio snapshots, risk summaries, entry forms, and event lists.
+- Historical trade, cash-ledger, corporate-action, and daily snapshot rows are not physically removed. To correct a specific ledger row from the Web UI, delete that row before archiving its account.
 
 ### Manual FX refresh on `/portfolio`
 

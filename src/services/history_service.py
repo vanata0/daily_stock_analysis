@@ -389,6 +389,31 @@ class HistoryService:
             stock_code=getattr(record, "code", None),
         )
 
+    def resolve_and_get_run_flow(self, record_id: str):
+        """
+        Resolve record_id and return a sanitized run-flow snapshot.
+
+        Uses the same strict JSON parsing behavior as diagnostics so malformed
+        persisted payloads surface as backend errors instead of partial graphs.
+        """
+        record = self._resolve_record(record_id)
+        if not record:
+            return None
+
+        from src.services.run_flow import build_history_run_flow_snapshot
+
+        return build_history_run_flow_snapshot(
+            record,
+            context_snapshot=self._parse_diagnostic_json_field(
+                getattr(record, "context_snapshot", None),
+                "context_snapshot",
+            ),
+            raw_result=self._parse_diagnostic_json_field(
+                getattr(record, "raw_result", None),
+                "raw_result",
+            ),
+        )
+
     @staticmethod
     def _parse_diagnostic_json_field(value: Any, field_name: str) -> Any:
         """Strict JSON parser for persisted diagnostic inputs."""

@@ -345,6 +345,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `STOCK_LIST` | Watchlist codes (comma-separated) | - |
 | `MAX_WORKERS` | Concurrent threads | `3` |
 | `MARKET_REVIEW_ENABLED` | Enable market review | `true` |
+| `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
 | `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), hk (HK stocks), us (US stocks), both (all three markets) | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | Index change color style in market reviews: `green_up` = green gains/red losses (default), `red_up` = red gains/green losses | `green_up` |
 | `SCHEDULE_ENABLED` | Enable scheduled tasks | `false` |
@@ -1406,6 +1407,8 @@ A: Check if Actions is enabled, and if cron expression is correct (note it's UTC
 - If Agent asks for more days than the local cache contains, the tool returns the available records and marks the response with `partial_cache=true`, `requested_days`, and `actual_records`.
 - When the cache is missing or stale, the tool keeps the original data-source fetch path; successful fetches are written back to `stock_daily` on a best-effort basis, and write failures do not block the Agent response.
 - `search_stock_news` and `search_comprehensive_intel` persist successful results to `news_intel` on a best-effort basis, reusing the existing URL / fallback-key deduplication logic.
+- Stock news search now applies a domain-agnostic admission filter after relevance ranking: obvious download/install/app-rating pages and adult/escort spam pages are removed, and zero-score filler results are dropped when the same batch already has direct-stock or scored sector/market candidates. This is not a hard-coded website blocklist.
+- This admission-filter change is isolated to retrieval post-filtering and does not alter model names, provider settings, Base URL, LiteLLM route semantics, or runtime config migration/cleanup behavior.
 - `get_realtime_quote` does not use `stock_daily` as a realtime-quote cache and does not write intraday quotes into the daily-bar table; realtime quote caching should use a dedicated realtime store if needed.
 
 ## Agent Event Monitor

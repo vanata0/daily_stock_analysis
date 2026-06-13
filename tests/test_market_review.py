@@ -104,6 +104,35 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         persist_history.assert_called_once()
         self.assertTrue(persist_history.call_args.kwargs["query_id"].startswith("market_review_"))
 
+    def test_run_market_review_can_skip_report_file_for_context_generation(self) -> None:
+        notifier = self._make_notifier()
+        market_analyzer = MagicMock()
+        market_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
+            report="CN body",
+            market_light_snapshot={"region": "cn", "trade_date": "2026-03-06", "score": 60},
+        )
+
+        with patch.object(
+            market_review_module,
+            "get_config",
+            return_value=SimpleNamespace(report_language="zh", market_review_region="cn"),
+        ), patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=market_analyzer,
+        ), patch.object(market_review_module, "_persist_market_review_history") as persist_history:
+            result = run_market_review(
+                notifier,
+                send_notification=False,
+                return_structured=True,
+                save_report_file=False,
+            )
+
+        self.assertIsInstance(result, market_review_module.MarketReviewRunResult)
+        self.assertEqual(result.report, "CN body")
+        notifier.save_report_to_file.assert_not_called()
+        persist_history.assert_called_once()
+
     def test_run_market_review_passes_request_config_to_generation(self) -> None:
         notifier = self._make_notifier()
         request_config = SimpleNamespace(report_language="en", market_review_region="cn")

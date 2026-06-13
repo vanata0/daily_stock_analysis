@@ -36,6 +36,7 @@ except ModuleNotFoundError:
 from src.config import Config
 from src.storage import DatabaseManager, AnalysisHistory, BacktestResult, DecisionSignalRecord
 from src.analyzer import AnalysisResult
+from src.daily_market_context_guardrail import apply_daily_market_context_guardrail
 from src.services.history_service import HistoryService
 import src.auth as auth
 
@@ -355,6 +356,48 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(item["turnover_rate"], 11.46)
         self.assertEqual(item["market_phase_summary"]["phase"], "intraday")
         self.assertEqual(item["market_phase_summary"]["minutes_to_close"], 300)
+
+    def test_history_persistence_keeps_softened_operation_advice_from_guardrail(self) -> None:
+        """Conservative-market guardrail short operation_advice is persisted and exposed to history list."""
+        result = self._build_result()
+        result.decision_type = "buy"
+        result.operation_advice = "立即买入并积极加仓"
+
+        apply_daily_market_context_guardrail(
+            result,
+            daily_market_context={
+                "region": "cn",
+                "trade_date": "2026-06-06",
+                "summary": "大盘退潮，高风险，建议观望，仓位上限30%。",
+                "risk_tags": ["high_risk", "low_position_cap"],
+            },
+            report_language="zh",
+        )
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_softened_operation_advice",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        service = HistoryService(self.db)
+        payload = service.get_history_list(stock_code="600519", page=1, limit=10)
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["operation_advice"], "观望")
+        self.assertLessEqual(len(payload["items"][0]["operation_advice"]), 20)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_softened_operation_advice"
+            ).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            self.assertEqual(row.operation_advice, "观望")
 
     def test_market_review_history_can_be_filtered_without_stock_records(self) -> None:
         """Market review records should be queryable as a dedicated history collection."""

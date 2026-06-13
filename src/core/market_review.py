@@ -139,6 +139,8 @@ def run_market_review(
     override_region: Optional[str] = None,
     query_id: Optional[str] = None,
     return_structured: bool = False,
+    save_report_file: bool = True,
+    persist_history: bool = True,
     trigger_source: str = "cli",
 ) -> Optional[str] | Optional[MarketReviewRunResult]:
     """
@@ -153,6 +155,8 @@ def run_market_review(
         merge_notification: 是否合并推送（跳过本次推送，由 main 层合并个股+大盘后统一发送，Issue #190）
         override_region: 覆盖 config 的 market_review_region（Issue #373 交易日过滤后有效子集）
         query_id: 历史记录关联 ID；API 后台任务会传入 task_id，CLI/Bot 为空时自动生成
+        save_report_file: 是否保存 Markdown 文件；上下文生成路径可关闭以避免多区域临时复盘互相覆盖
+        persist_history: 是否写入 analysis_history；预热路径可关闭以避免覆盖用户可见的同日大盘复盘记录
         trigger_source: 触发来源，用于日志排障（cli/schedule/api/bot/service 等）
 
     Returns:
@@ -255,31 +259,33 @@ def run_market_review(
                 market_review_payload,
                 wrapper_title=review_text["root_title"],
             )
-            # 保存报告到文件
-            date_str = datetime.now().strftime('%Y%m%d')
-            report_filename = f"market_review_{date_str}.md"
-            filepath = notifier.save_report_to_file(
-                markdown_report,
-                report_filename
-            )
-            logger.info(
-                "[MarketReview] component=market_review action=save_report "
-                "trigger_source=%s query_id=%s region=%s path=%s",
-                trigger_source,
-                history_query_id,
-                persist_region,
-                filepath,
-            )
+            if save_report_file:
+                # 保存报告到文件
+                date_str = datetime.now().strftime('%Y%m%d')
+                report_filename = f"market_review_{date_str}.md"
+                filepath = notifier.save_report_to_file(
+                    markdown_report,
+                    report_filename
+                )
+                logger.info(
+                    "[MarketReview] component=market_review action=save_report "
+                    "trigger_source=%s query_id=%s region=%s path=%s",
+                    trigger_source,
+                    history_query_id,
+                    persist_region,
+                    filepath,
+                )
 
-            _persist_market_review_history(
-                review_report=review_report,
-                markdown_report=markdown_report,
-                region=persist_region,
-                config=runtime_config,
-                query_id=history_query_id,
-                market_light_snapshots=market_light_snapshots,
-                market_review_payload=market_review_payload,
-            )
+            if persist_history:
+                _persist_market_review_history(
+                    review_report=review_report,
+                    markdown_report=markdown_report,
+                    region=persist_region,
+                    config=runtime_config,
+                    query_id=history_query_id,
+                    market_light_snapshots=market_light_snapshots,
+                    market_review_payload=market_review_payload,
+                )
             
             # 推送通知（合并模式下跳过，由 main 层统一发送）
             if merge_notification and send_notification:

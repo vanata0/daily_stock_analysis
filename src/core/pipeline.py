@@ -532,7 +532,7 @@ class StockAnalysisPipeline:
                             stock_name,
                             code,
                             max_items=10,
-                            max_age_days=getattr(self.config, "news_max_age_days", 7),
+                            max_age_days=30,
                         )
                         if _em_news_ctx:
                             if news_context:

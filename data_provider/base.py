@@ -3310,3 +3310,123 @@ class DataFetcherManager:
         if last_error:
             logger.warning(f"[涨停池] 所有数据源均失败，最终错误: {last_error}")
         return []
+
+    # ------------------------------------------------------------------
+    # 北向资金 / 融资融券 / 研报 — 新增 context 方法（fail-open）
+    # ------------------------------------------------------------------
+
+    def get_northbound_context(self, timeout: int = 10) -> Dict[str, Any]:
+        """获取北向资金（沪深港通）当日最新摘要，适合注入 agent context。
+
+        数据来源：同花顺 hsgtApi（零鉴权，不封 IP）。
+        市场级指标，不需要 stock_code 参数。
+        """
+        from data_provider.northbound_fetcher import get_northbound_summary
+
+        try:
+            return get_northbound_summary(timeout=timeout)
+        except Exception as exc:
+            logger.warning("[northbound_context] failed: %s", exc)
+            return {
+                "status": "failed",
+                "hgt_latest_yi": None,
+                "sgt_latest_yi": None,
+                "total_latest_yi": None,
+                "source": "ths_hsgtApi",
+                "errors": [str(exc)],
+            }
+
+    def get_margin_trading_context(
+        self, stock_code: str, days: int = 30
+    ) -> Dict[str, Any]:
+        """获取个股融资融券明细（日级），fail-open。
+
+        仅支持 A 股主板/科创板/创业板（非 ETF）。
+        """
+        stock_code = normalize_stock_code(stock_code)
+        if _market_tag(stock_code) != "cn" or _is_etf_code(stock_code):
+            return self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "margin_trading", "result": "not_supported", "duration_ms": 0}],
+                ["not supported for this market/instrument"],
+            )
+
+        import time as _time
+
+        t0 = _time.time()
+        try:
+            payload = self._fundamental_adapter.get_margin_trading(stock_code, days=days)
+        except Exception as exc:
+            cost_ms = int((_time.time() - t0) * 1000)
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "margin_trading", "result": "failed", "duration_ms": cost_ms}],
+                [str(exc)],
+            )
+
+        cost_ms = int((_time.time() - t0) * 1000)
+        status = payload.get("status", "failed")
+        return self._build_fundamental_block(
+            status,
+            {
+                "records": payload.get("records", []),
+                "source": payload.get("source", "eastmoney_datacenter"),
+            },
+            [{"provider": "margin_trading", "result": status, "duration_ms": cost_ms}],
+            payload.get("errors", []),
+        )
+
+    def get_research_report_context(
+        self, stock_code: str, max_count: int = 5
+    ) -> Dict[str, Any]:
+        """获取个股研报列表 + EPS 预测，fail-open。
+
+        包含：东财研报列表 + 同花顺机构一致预期 EPS。
+        """
+        stock_code = normalize_stock_code(stock_code)
+        if _market_tag(stock_code) != "cn":
+            return self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "research_report", "result": "not_supported", "duration_ms": 0}],
+                ["research reports only supported for A-share"],
+            )
+
+        import time as _time
+
+        t0 = _time.time()
+        try:
+            from data_provider.research_report_fetcher import get_research_context
+
+            payload = get_research_context(stock_code, max_count=max_count)
+        except Exception as exc:
+            cost_ms = int((_time.time() - t0) * 1000)
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "research_report", "result": "failed", "duration_ms": cost_ms}],
+                [str(exc)],
+            )
+
+        cost_ms = int((_time.time() - t0) * 1000)
+        status = payload.get("status", "failed")
+        return self._build_fundamental_block(
+            status,
+            {
+                "report_count": payload.get("report_count", 0),
+                "latest_reports": payload.get("latest_reports", []),
+                "rating_summary": payload.get("rating_summary", {}),
+                "eps_forecast": payload.get("eps_forecast", {}),
+            },
+            [
+                {
+                    "provider": src,
+                    "result": status,
+                    "duration_ms": cost_ms,
+                }
+                for src in (payload.get("source_chain") or ["research_report"])
+            ],
+            payload.get("errors", []),
+        )

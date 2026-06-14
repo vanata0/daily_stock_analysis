@@ -3117,6 +3117,96 @@ class GeminiAnalyzer:
 > 资金流向只能作为价格位置的过滤器：接近压力且主力流出时不得追买；接近支撑且未放量跌破时，优先判断为持有观察、震荡或洗盘观察。
 """
 
+        # 添加北向资金数据（A股专用）
+        northbound_ctx = context.get("northbound_context")
+        if isinstance(northbound_ctx, dict) and northbound_ctx.get("status") == "ok":
+            hgt = northbound_ctx.get("hgt_latest_yi", "N/A")
+            sgt = northbound_ctx.get("sgt_latest_yi", "N/A")
+            total = northbound_ctx.get("total_latest_yi", "N/A")
+            _dir_map = {"inflow": "净流入", "outflow": "净流出"}
+            hgt_dir = _dir_map.get(northbound_ctx.get("hgt_direction", ""), "")
+            sgt_dir = _dir_map.get(northbound_ctx.get("sgt_direction", ""), "")
+            prompt += f"""
+### 北向资金（沪深港通）
+| 渠道 | 今日净流入（亿元） | 方向 |
+|------|------------------|------|
+| 沪股通 | {hgt} | {hgt_dir} |
+| 深股通 | {sgt} | {sgt_dir} |
+| **合计** | **{total}** | |
+
+> 北向资金持续净流入为市场整体情绪偏多信号，持续净流出则偏空；单日数据参考价值有限，需结合趋势判断。
+"""
+
+        # 添加融资融券数据（A股专用）
+        margin_ctx = context.get("margin_trading_context")
+        if isinstance(margin_ctx, dict) and margin_ctx.get("status") == "ok":
+            records = (margin_ctx.get("data") or {}).get("records", [])
+            if records:
+                latest = records[0]
+                prev = records[1] if len(records) > 1 else {}
+
+                def _yuan_to_yi(v):
+                    try:
+                        return f"{float(v) / 1e8:.2f}"
+                    except (TypeError, ValueError):
+                        return "N/A"
+
+                rzye = _yuan_to_yi(latest.get("rzye"))
+                rqye = _yuan_to_yi(latest.get("rqye"))
+                rzrqye = _yuan_to_yi(latest.get("rzrqye"))
+                rzye_chg = ""
+                try:
+                    chg = float(latest.get("rzye", 0)) - float(prev.get("rzye", 0))
+                    if prev.get("rzye") is not None:
+                        rzye_chg = f"（较前日{'↑' if chg > 0 else '↓'}{abs(chg)/1e8:.2f}亿）"
+                except (TypeError, ValueError):
+                    pass
+                prompt += f"""
+### 融资融券
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| 融资余额 | {rzye} 亿元{rzye_chg} | 余额上升表示杠杆买入增加 |
+| 融券余额 | {rqye} 亿元 | 余额上升表示做空力量增加 |
+| 融资融券合计 | {rzrqye} 亿元 | |
+
+> 融资余额持续上升为偏多信号，但过高融资余额存在强平踩踏风险；融券余额上升需警惕机构对冲或做空。
+"""
+
+        # 添加研报与机构预期数据（A股专用）
+        research_ctx = context.get("research_report_context")
+        if isinstance(research_ctx, dict) and research_ctx.get("status") in ("ok", "partial"):
+            _research_data = research_ctx.get("data") or {}
+            eps_forecast = _research_data.get("eps_forecast", {})
+            rating_summary = _research_data.get("rating_summary", {})
+            latest_reports = _research_data.get("latest_reports", [])
+            report_count = _research_data.get("report_count", 0)
+            if report_count > 0 or eps_forecast.get("status") == "ok":
+                # 评级汇总
+                rating_text = "、".join(
+                    f"{r}×{c}" for r, c in sorted(rating_summary.items(), key=lambda x: -x[1])
+                ) if rating_summary else "N/A"
+                # EPS 预测
+                eps_this = eps_forecast.get("eps_this_year", "N/A")
+                eps_next = eps_forecast.get("eps_next_year", "N/A")
+                analyst_count = eps_forecast.get("analyst_count", "N/A")
+                prompt += f"""
+### 机构研报与预期（近期{report_count}篇）
+| 指标 | 数值 |
+|------|------|
+| 评级分布 | {rating_text} |
+| 覆盖分析师数 | {analyst_count} |
+| 机构一致预期 EPS（今年） | {eps_this} |
+| 机构一致预期 EPS（明年） | {eps_next} |
+"""
+                if latest_reports:
+                    prompt += "\n**近期研报摘要**：\n"
+                    for rpt in latest_reports[:3]:
+                        prompt += (
+                            f"- [{rpt.get('date', '')}] {rpt.get('broker', '')} "
+                            f"《{rpt.get('title', '')}》评级：{rpt.get('rating', 'N/A')}\n"
+                        )
+                    prompt += "\n> 研报评级仅供参考，需结合技术面和基本面综合判断。\n"
+
         # 添加筹码分布数据
         if 'chip' in context:
             chip = context['chip']

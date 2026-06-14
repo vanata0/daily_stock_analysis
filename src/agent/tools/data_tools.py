@@ -694,3 +694,125 @@ get_capital_flow_tool = ToolDefinition(
 
 
 ALL_DATA_TOOLS.append(get_capital_flow_tool)
+
+
+# ============================================================
+# get_northbound_flow
+# ============================================================
+
+def _handle_get_northbound_flow() -> dict:
+    """Get northbound fund (沪深港通) flow for today."""
+    manager = _get_fetcher_manager()
+    try:
+        return manager.get_northbound_context()
+    except Exception as exc:
+        logger.warning("get_northbound_flow failed: %s", exc)
+        return {"status": "failed", "error": str(exc)}
+
+
+get_northbound_flow_tool = ToolDefinition(
+    name="get_northbound_flow",
+    description=(
+        "Get today's northbound fund (北向资金 / 沪深港通) flow data — "
+        "Shanghai-HK Connect (沪股通) and Shenzhen-HK Connect (深股通) "
+        "cumulative net buy/sell amounts in billions CNY. "
+        "Positive = net inflow, negative = net outflow. "
+        "Critical for gauging foreign capital sentiment on A-share market. "
+        "Data source: 同花顺 hsgtApi (real-time, no API key required)."
+    ),
+    parameters=[],
+    handler=_handle_get_northbound_flow,
+    category="data",
+)
+
+ALL_DATA_TOOLS.append(get_northbound_flow_tool)
+
+
+# ============================================================
+# get_margin_trading
+# ============================================================
+
+def _handle_get_margin_trading(stock_code: str, days: int = 30) -> dict:
+    """Get margin trading details for an A-share stock."""
+    manager = _get_fetcher_manager()
+    try:
+        return manager.get_margin_trading_context(stock_code, days=days)
+    except Exception as exc:
+        logger.warning("get_margin_trading %s failed: %s", stock_code, exc)
+        return {"status": "failed", "error": str(exc)}
+
+
+get_margin_trading_tool = ToolDefinition(
+    name="get_margin_trading",
+    description=(
+        "Get margin trading (融资融券) data for an A-share stock. "
+        "Returns daily financing balance (融资余额), margin buying, "
+        "and short-selling balance (融券余额) for recent N days. "
+        "Rising 融资余额 = leveraged bulls building positions; "
+        "shrinking = deleveraging or bearish sentiment. "
+        "Only supported for A-share stocks (not ETFs, HK, or US)."
+    ),
+    parameters=[
+        ToolParameter(
+            name="stock_code",
+            type="string",
+            description="A-share stock code, e.g., '600519'",
+        ),
+        ToolParameter(
+            name="days",
+            type="integer",
+            description="Number of recent trading days to fetch (default: 30)",
+            required=False,
+            default=30,
+        ),
+    ],
+    handler=_handle_get_margin_trading,
+    category="data",
+)
+
+ALL_DATA_TOOLS.append(get_margin_trading_tool)
+
+
+# ============================================================
+# get_research_reports
+# ============================================================
+
+def _handle_get_research_reports(stock_code: str, max_count: int = 5) -> dict:
+    """Get institutional research reports for an A-share stock."""
+    manager = _get_fetcher_manager()
+    try:
+        return manager.get_research_report_context(stock_code, max_count=max_count)
+    except Exception as exc:
+        logger.warning("get_research_reports %s failed: %s", stock_code, exc)
+        return {"status": "failed", "error": str(exc)}
+
+
+get_research_reports_tool = ToolDefinition(
+    name="get_research_reports",
+    description=(
+        "Get institutional research reports (研报) for an A-share stock. "
+        "Returns recent report titles, dates, issuing brokerages, ratings "
+        "(买入/增持/中性/…), and EPS forecasts for current/next/year-after. "
+        "Also includes 同花顺 consensus EPS forecast and analyst coverage count. "
+        "Use to understand sell-side consensus and valuation anchors. "
+        "Only supported for A-share individual stocks."
+    ),
+    parameters=[
+        ToolParameter(
+            name="stock_code",
+            type="string",
+            description="A-share stock code, e.g., '600519'",
+        ),
+        ToolParameter(
+            name="max_count",
+            type="integer",
+            description="Maximum number of recent reports to return (default: 5)",
+            required=False,
+            default=5,
+        ),
+    ],
+    handler=_handle_get_research_reports,
+    category="data",
+)
+
+ALL_DATA_TOOLS.append(get_research_reports_tool)

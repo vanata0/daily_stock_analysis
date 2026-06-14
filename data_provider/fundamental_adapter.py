@@ -605,3 +605,201 @@ class AkshareFundamentalAdapter:
         result["status"] = "ok"
         result["source_chain"].append(f"dragon_tiger:{source}")
         return result
+
+    # ------------------------------------------------------------------
+    # 融资融券 / 大宗交易 / 股东户数 — 东财 datacenter-web 直连
+    # 防封：所有调用经 em_datacenter() → em_get()，串行限流 ≥1s
+    # ------------------------------------------------------------------
+
+    def get_margin_trading(self, stock_code: str, days: int = 30) -> Dict[str, Any]:
+        """融资融券明细（日级，最近 N 天）。
+
+        Returns:
+            {
+                "status": "ok" | "empty" | "failed",
+                "stock_code": str,
+                "records": [
+                    {
+                        "date": str,
+                        "rzye": float,   # 融资余额（元）
+                        "rzmre": float,  # 融资买入额
+                        "rzche": float,  # 融资偿还额
+                        "rqye": float,   # 融券余额（元）
+                        "rzrqye": float, # 两融合计余额
+                    },
+                    ...
+                ],
+                "source": "eastmoney_datacenter",
+                "errors": [],
+            }
+        """
+        from data_provider.eastmoney_http import em_datacenter
+
+        result: Dict[str, Any] = {
+            "status": "failed",
+            "stock_code": stock_code,
+            "records": [],
+            "source": "eastmoney_datacenter",
+            "errors": [],
+        }
+        try:
+            rows = em_datacenter(
+                "RPTA_WEB_RZRQ_GGMX",
+                filter_str=f'(SCODE="{stock_code}")',
+                page_size=days,
+                sort_columns="DATE",
+                sort_types="-1",
+            )
+            records = []
+            for row in rows:
+                records.append(
+                    {
+                        "date": str(row.get("DATE", ""))[:10],
+                        "rzye": float(row.get("RZYE") or 0),
+                        "rzmre": float(row.get("RZMRE") or 0),
+                        "rzche": float(row.get("RZCHE") or 0),
+                        "rqye": float(row.get("RQYE") or 0),
+                        "rzrqye": float(row.get("RZRQYE") or 0),
+                    }
+                )
+            result["records"] = records
+            result["status"] = "ok" if records else "empty"
+        except Exception as exc:
+            result["errors"].append(f"margin_trading:{type(exc).__name__}:{exc}")
+            logger.warning("[margin_trading] %s failed: %s", stock_code, exc)
+        return result
+
+    def get_block_trade(self, stock_code: str, count: int = 20) -> Dict[str, Any]:
+        """大宗交易记录（最近 N 条）。
+
+        Returns:
+            {
+                "status": "ok" | "empty" | "failed",
+                "stock_code": str,
+                "records": [
+                    {
+                        "date": str,
+                        "price": float,       # 成交价
+                        "close": float,       # 当日收盘价
+                        "premium_pct": float, # 溢价率（%）
+                        "volume": float,      # 成交量（股）
+                        "amount": float,      # 成交额（元）
+                        "buyer": str,
+                        "seller": str,
+                    },
+                    ...
+                ],
+                "source": "eastmoney_datacenter",
+                "errors": [],
+            }
+        """
+        from data_provider.eastmoney_http import em_datacenter
+
+        result: Dict[str, Any] = {
+            "status": "failed",
+            "stock_code": stock_code,
+            "records": [],
+            "source": "eastmoney_datacenter",
+            "errors": [],
+        }
+        try:
+            rows = em_datacenter(
+                "RPT_DATA_BLOCKTRADE",
+                filter_str=f'(SECURITY_CODE="{stock_code}")',
+                page_size=count,
+                sort_columns="TRADE_DATE",
+                sort_types="-1",
+            )
+            records = []
+            for row in rows:
+                close = float(row.get("CLOSE_PRICE") or 0)
+                price = float(row.get("DEAL_PRICE") or 0)
+                premium = round((price / close - 1) * 100, 2) if close else 0.0
+                records.append(
+                    {
+                        "date": str(row.get("TRADE_DATE", ""))[:10],
+                        "price": price,
+                        "close": close,
+                        "premium_pct": premium,
+                        "volume": float(row.get("DEAL_VOLUME") or 0),
+                        "amount": float(row.get("DEAL_AMT") or 0),
+                        "buyer": str(row.get("BUYER_NAME") or ""),
+                        "seller": str(row.get("SELLER_NAME") or ""),
+                    }
+                )
+            result["records"] = records
+            result["status"] = "ok" if records else "empty"
+        except Exception as exc:
+            result["errors"].append(f"block_trade:{type(exc).__name__}:{exc}")
+            logger.warning("[block_trade] %s failed: %s", stock_code, exc)
+        return result
+
+    def get_holder_num_change(self, stock_code: str, count: int = 8) -> Dict[str, Any]:
+        """股东户数变化（季度级）。
+
+        Returns:
+            {
+                "status": "ok" | "empty" | "failed",
+                "stock_code": str,
+                "records": [
+                    {
+                        "date": str,            # 报告期（季末）
+                        "holder_num": int,
+                        "change_num": int,      # 环比变化数量
+                        "change_ratio": float,  # 环比变化（%）
+                        "avg_shares": float,    # 户均持股（股）
+                    },
+                    ...
+                ],
+                "trend": "decreasing" | "increasing" | "stable" | None,
+                "source": "eastmoney_datacenter",
+                "errors": [],
+            }
+        """
+        from data_provider.eastmoney_http import em_datacenter
+
+        result: Dict[str, Any] = {
+            "status": "failed",
+            "stock_code": stock_code,
+            "records": [],
+            "trend": None,
+            "source": "eastmoney_datacenter",
+            "errors": [],
+        }
+        try:
+            rows = em_datacenter(
+                "RPT_HOLDERNUMLATEST",
+                filter_str=f'(SECURITY_CODE="{stock_code}")',
+                page_size=count,
+                sort_columns="END_DATE",
+                sort_types="-1",
+            )
+            records = []
+            for row in rows:
+                records.append(
+                    {
+                        "date": str(row.get("END_DATE", ""))[:10],
+                        "holder_num": int(row.get("HOLDER_NUM") or 0),
+                        "change_num": int(row.get("HOLDER_NUM_CHANGE") or 0),
+                        "change_ratio": float(row.get("HOLDER_NUM_RATIO") or 0),
+                        "avg_shares": float(row.get("AVG_FREE_SHARES") or 0),
+                    }
+                )
+            result["records"] = records
+            result["status"] = "ok" if records else "empty"
+
+            # Derive trend from most recent 3 periods
+            if len(records) >= 2:
+                recent_ratios = [r["change_ratio"] for r in records[:3] if r["change_ratio"] != 0]
+                if recent_ratios:
+                    avg = sum(recent_ratios) / len(recent_ratios)
+                    if avg < -3:
+                        result["trend"] = "decreasing"
+                    elif avg > 3:
+                        result["trend"] = "increasing"
+                    else:
+                        result["trend"] = "stable"
+        except Exception as exc:
+            result["errors"].append(f"holder_num:{type(exc).__name__}:{exc}")
+            logger.warning("[holder_num] %s failed: %s", stock_code, exc)
+        return result

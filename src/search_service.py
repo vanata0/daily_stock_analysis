@@ -4076,12 +4076,19 @@ class SearchService:
             if search_count >= max_searches:
                 break
 
-            # 选择搜索引擎（轮流使用）
+            # 选择搜索引擎：优先按 provider_preference 指定；否则轮询
             available_providers = [p for p in self._providers if p.is_available]
             if not available_providers:
                 break
 
-            provider = available_providers[provider_index % len(available_providers)]
+            pref = (dim.get('provider_preference') or '').lower()
+            if pref:
+                provider = next(
+                    (p for p in available_providers if pref in p.name.lower()),
+                    available_providers[provider_index % len(available_providers)],
+                )
+            else:
+                provider = available_providers[provider_index % len(available_providers)]
             provider_index += 1
 
             request_days = (
@@ -4097,43 +4104,23 @@ class SearchService:
                 request_days,
             )
 
-        dims_to_run = search_dimensions[:max_searches]
-
-        # 按维度分配 provider：
-        # - 若维度指定了 provider_preference，优先选匹配该名称（大小写不敏感）的 provider
-        # - 找不到匹配时降级为轮询，保持与原逻辑一致
-        def _pick_provider(dim: dict, idx: int) -> 'BaseSearchProvider':
-            pref = (dim.get('provider_preference') or '').lower()
-            if pref:
-                for p in available_providers:
-                    if pref in p.name.lower():
-                        return p
-            return available_providers[idx % len(available_providers)]
-
-        dim_provider_pairs = [
-            (dim, _pick_provider(dim, i))
-            for i, dim in enumerate(dims_to_run)
-        ]
-
-        def _search_one(dim_provider):
-            dim, provider = dim_provider
-            logger.info("[情报搜索] %s: 使用 %s", dim['desc'], provider.name)
             if isinstance(provider, TavilySearchProvider) and dim.get('tavily_topic'):
-                resp = provider.search(
+                response = provider.search(
                     dim['query'],
                     max_results=provider_max_results,
                     days=request_days,
                     topic=dim['tavily_topic'],
                 )
             else:
-                resp = provider.search(
+                response = provider.search(
                     dim['query'],
                     max_results=provider_max_results,
                     days=request_days,
                 )
+
             if dim['strict_freshness']:
-                filtered = self._filter_news_response(
-                    resp,
+                filtered_response = self._filter_news_response(
+                    response,
                     search_days=search_days,
                     max_results=provider_max_results,
                     log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
@@ -4147,10 +4134,11 @@ class SearchService:
                     log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
                 )
             else:
-                filtered = self._normalize_and_limit_response(
-                    resp,
-                    max_results=target_per_dimension,
+                filtered_response = self._normalize_and_limit_response(
+                    response,
+                    max_results=provider_max_results,
                 )
+
             filtered_response = self._rank_news_response(
                 filtered_response,
                 stock_code=stock_code,
@@ -4182,7 +4170,6 @@ class SearchService:
 
             # 短暂延迟避免请求过快
             time.sleep(0.5)
-
 
         return results
     

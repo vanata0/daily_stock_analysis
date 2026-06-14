@@ -153,6 +153,8 @@ class StockAnalysisPipeline:
         self.notifier = NotificationService(source_message=source_message)
         self._single_stock_notify_lock = threading.Lock()
         self._daily_market_context_service_lock = threading.Lock()
+        # 北向资金日内缓存：key = ISO date string，value = context dict
+        self._northbound_cache: Dict[str, Any] = {}
         
         # 初始化搜索服务（可选，初始化失败不应阻断主分析流程）
         try:
@@ -528,6 +530,22 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"{stock_name}({code}) Social sentiment fetch failed: {e}")
 
+            # Step 4.7: 附加数据（北向资金/融资融券/研报）— A股专用，fail-open
+            _is_cn = (market == "cn")
+            _northbound_ctx: Optional[Dict[str, Any]] = None
+            _margin_ctx: Optional[Dict[str, Any]] = None
+            _research_ctx: Optional[Dict[str, Any]] = None
+            if _is_cn:
+                _northbound_ctx = self._get_cached_northbound_context()
+                try:
+                    _margin_ctx = self.fetcher_manager.get_margin_trading_context(code)
+                except Exception as _exc:
+                    logger.warning("%s(%s) 融资融券获取失败: %s", stock_name, code, _exc)
+                try:
+                    _research_ctx = self.fetcher_manager.get_research_report_context(code)
+                except Exception as _exc:
+                    logger.warning("%s(%s) 研报获取失败: %s", stock_name, code, _exc)
+
             # Step 5: 获取分析上下文（技术面数据）
             self._emit_progress(58, f"{stock_name}：正在整理分析上下文")
             context = self.db.get_analysis_context(code)
@@ -565,7 +583,13 @@ class StockAnalysisPipeline:
             )
             if portfolio_context is not None:
                 enhanced_context["portfolio_context"] = dict(portfolio_context)
-            
+            if _northbound_ctx is not None:
+                enhanced_context["northbound_context"] = _northbound_ctx
+            if _margin_ctx is not None:
+                enhanced_context["margin_trading_context"] = _margin_ctx
+            if _research_ctx is not None:
+                enhanced_context["research_report_context"] = _research_ctx
+
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             (
                 analysis_context_pack_summary,
@@ -944,6 +968,22 @@ class StockAnalysisPipeline:
         )
 
         return enhanced
+
+    def _get_cached_northbound_context(self) -> Optional[Dict[str, Any]]:
+        """北向资金日内缓存：全批次只抓一次，按日期 key 复用。"""
+        from datetime import date as _date
+        today_key = _date.today().isoformat()
+        if today_key in self._northbound_cache:
+            return self._northbound_cache[today_key]
+        try:
+            from data_provider.northbound_fetcher import get_northbound_summary
+            result = get_northbound_summary()
+            self._northbound_cache = {today_key: result}  # 只保留当天
+            return result
+        except Exception as exc:
+            logger.warning("北向资金获取失败: %s", exc)
+            self._northbound_cache = {today_key: None}
+            return None
 
     def _attach_belong_boards_to_fundamental_context(
         self,

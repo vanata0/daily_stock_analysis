@@ -144,12 +144,35 @@ def _parse_news_time(raw: str) -> Optional[datetime]:
     """尝试解析多种日期格式，返回 aware UTC datetime 或 None。"""
     if not raw:
         return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+    # 按各格式对应的实际字符数截取，而非格式字符串长度
+    for fmt, width in (
+        ("%Y-%m-%d %H:%M:%S", 19),
+        ("%Y-%m-%d %H:%M", 16),
+        ("%Y-%m-%d", 10),
+    ):
         try:
-            return datetime.strptime(raw[:len(fmt)], fmt).replace(tzinfo=timezone.utc)
+            return datetime.strptime(raw[:width], fmt).replace(tzinfo=timezone.utc)
         except ValueError:
             continue
     return None
+
+
+def _is_relevant(item: Dict[str, Any], code: str, stock_name: str) -> bool:
+    """
+    判断新闻是否与该股票直接相关。
+
+    东财按代码检索时会混入行情汇总文章（标题如"31只创业板股..."），
+    这类文章仅在正文数据列表中带一串股票代码，对个股分析价值极低。
+    过滤规则：标题必须包含股票代码或公司名称（至少2个汉字匹配）。
+    """
+    title = item.get("title", "")
+    if code in title:
+        return True
+    # 公司名称取前4字做子串匹配，避免简称截断误判
+    name_key = stock_name[:4] if len(stock_name) >= 2 else stock_name
+    if name_key and name_key in title:
+        return True
+    return False
 
 
 def format_stock_news_context(
@@ -163,6 +186,7 @@ def format_stock_news_context(
     将个股新闻列表格式化为可直接注入 prompt 的 news_context 字符串。
 
     - 过滤超出 max_age_days 的旧闻（时间无法解析的保留）
+    - 过滤行情汇总类噪音文章（标题不含股票代码或公司名称）
     - 截取前 max_items 条
     - 格式与 format_intel_report 输出风格一致
     """
@@ -172,11 +196,18 @@ def format_stock_news_context(
     cutoff = now_utc - timedelta(days=max_age_days)
 
     filtered: List[Dict[str, Any]] = []
+    skipped_noise = 0
     for item in news_items:
         dt = _parse_news_time(item.get("time", ""))
         if dt is not None and dt < cutoff:
             continue
+        if not _is_relevant(item, code, stock_name):
+            skipped_noise += 1
+            continue
         filtered.append(item)
+
+    if skipped_noise:
+        logger.debug("[东财个股新闻] %s 过滤汇总类噪音 %d 条", code, skipped_noise)
 
     filtered = filtered[:max_items]
     if not filtered:

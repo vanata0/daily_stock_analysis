@@ -517,6 +517,37 @@ class StockAnalysisPipeline:
             else:
                 logger.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
 
+            # Step 4.3: 东财个股新闻（A股专用）
+            # 策略：搜索服务无结果时作为主要来源；有结果时追加到末尾补充实时公告
+            if market == "cn":
+                try:
+                    from data_provider.eastmoney_news_fetcher import (
+                        get_stock_news,
+                        format_stock_news_context,
+                    )
+                    _em_news = get_stock_news(code, page_size=15)
+                    if _em_news:
+                        _em_news_ctx = format_stock_news_context(
+                            _em_news,
+                            stock_name,
+                            code,
+                            max_items=10,
+                            max_age_days=getattr(self.config, "news_max_age_days", 7),
+                        )
+                        if _em_news_ctx:
+                            if news_context:
+                                # 搜索有结果：追加东财新闻作为补充（实时公告更精准）
+                                news_context = news_context + "\n\n" + _em_news_ctx
+                            else:
+                                # 搜索无结果：东财新闻作为主要来源
+                                news_context = _em_news_ctx
+                            logger.info(
+                                "%s(%s) 东财个股新闻追加: %d 条",
+                                stock_name, code, len(_em_news),
+                            )
+                except Exception as _exc:
+                    logger.warning("%s(%s) 东财个股新闻获取失败: %s", stock_name, code, _exc)
+
             # Step 4.5: Social sentiment intelligence (US stocks only)
             if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
                 try:

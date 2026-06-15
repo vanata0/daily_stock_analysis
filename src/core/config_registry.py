@@ -482,11 +482,6 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 11,
-        "help_key": "settings.data_source.TUSHARE_API_URL",
-        "examples": [
-            "TUSHARE_API_URL=http://api.tushare.pro",
-            "TUSHARE_API_URL=http://your-proxy-host:8020/",
-        ],
     },
     "TICKFLOW_API_KEY": {
         "title": "TickFlow API Key",
@@ -4130,6 +4125,14 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         ],
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["legacy_provider_setting"],
+    },
+    "TUSHARE_API_URL": {
+        "help_key": "settings.data_source.TUSHARE_API_URL",
+        "examples": [
+            "TUSHARE_API_URL=http://api.tushare.pro",
+            "TUSHARE_API_URL=http://your-proxy-host:8020/",
+        ],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
     },
     "TICKFLOW_API_KEY": {
         "help_key": "settings.data_source.TICKFLOW_API_KEY",

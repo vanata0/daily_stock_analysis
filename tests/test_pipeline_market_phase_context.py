@@ -72,6 +72,8 @@ def _make_pipeline(*, agent_mode: bool = False, save_context_snapshot: bool = Tr
     pipeline.social_sentiment_service = None
 
     pipeline.fetcher_manager = MagicMock()
+    # Tushare 公告注入分支仅依赖 _get_fetcher_by_name；置 None 使其干净跳过，保持离线
+    pipeline.fetcher_manager._get_fetcher_by_name.return_value = None
     pipeline.fetcher_manager.get_stock_name.return_value = "贵州茅台"
     pipeline.fetcher_manager.get_realtime_quote.return_value = None
     pipeline.fetcher_manager.get_chip_distribution.return_value = None
@@ -107,6 +109,16 @@ def _make_pipeline(*, agent_mode: bool = False, save_context_snapshot: bool = Tr
 
 
 class PipelineMarketPhaseContextTestCase(unittest.TestCase):
+    def setUp(self):
+        # A股路径会注入东财个股新闻（实时网络）；离线测试下 stub 为空，
+        # 保持 news 块为 missing 的预期场景，且不发真实请求。
+        _p = patch(
+            "data_provider.eastmoney_news_fetcher.get_stock_news",
+            return_value=[],
+        )
+        _p.start()
+        self.addCleanup(_p.stop)
+
     def test_process_single_stock_propagates_current_time_to_analyze_stock(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
         pipeline.query_id = None

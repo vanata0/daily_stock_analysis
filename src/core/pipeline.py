@@ -1044,9 +1044,14 @@ class StockAnalysisPipeline:
     def _get_cached_northbound_context(self) -> Optional[Dict[str, Any]]:
         """北向资金日内缓存：全批次只抓一次，按日期 key 复用。"""
         from datetime import date as _date
+        # 惰性初始化：兼容通过 __new__ 构造（绕过 __init__）的场景
+        cache = getattr(self, "_northbound_cache", None)
+        if cache is None:
+            cache = {}
+            self._northbound_cache = cache
         today_key = _date.today().isoformat()
-        if today_key in self._northbound_cache:
-            return self._northbound_cache[today_key]
+        if today_key in cache:
+            return cache[today_key]
         try:
             from data_provider.northbound_fetcher import get_northbound_summary
             result = get_northbound_summary()

@@ -137,7 +137,13 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         ) as mock_tushare, patch(
             "data_provider.longbridge_fetcher.LongbridgeFetcher",
             return_value=_StubFetcher("LongbridgeFetcher", 5),
-        ) as mock_longbridge:
+        ) as mock_longbridge, patch(
+            "data_provider.stock_new_api_fetcher.StockNewAPIFetcher",
+            return_value=MagicMock(is_available=False),
+        ), patch(
+            "data_provider.screener_db_fetcher.ScreenerDBFetcher",
+            return_value=MagicMock(is_available=False),
+        ):
             mock_longbridge.has_configured_credentials.return_value = False
             manager = DataFetcherManager()
 

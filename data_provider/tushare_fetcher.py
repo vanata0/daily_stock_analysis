@@ -178,8 +178,9 @@ class TushareFetcher(BaseFetcher):
         The project already normalizes all Pro calls through the same request
         contract, so we do not need the official tushare SDK during runtime.
         """
-        client = _TushareHttpClient(token=token)
-        logger.debug("Tushare API client configured for direct HTTP calls")
+        api_url = get_config().tushare_api_url
+        client = _TushareHttpClient(token=token, api_url=api_url)
+        logger.debug("Tushare API client configured, endpoint: %s", api_url)
         return client
 
     def _determine_priority(self) -> int:
@@ -1258,6 +1259,171 @@ class TushareFetcher(BaseFetcher):
             "70集中度": round(concentration_70/100, 4)
         }
 
+    def get_share_float(
+        self,
+        stock_code: str,
+        lookback_days: int = 30,
+        lookahead_days: int = 90,
+    ) -> list:
+        """获取个股近期及未来解禁计划（Tushare share_float）。
+
+        按 float_date 聚合持有人，返回窗口内的解禁批次。
+
+        Returns:
+            [{"float_date", "total_share", "total_ratio", "share_type", "holders"}, ...]
+            按 float_date 升序，失败返回 []
+        """
+        if self._api is None or _is_us_code(stock_code) or _is_hk_market(stock_code):
+            return []
+
+        ts_code = self._convert_stock_code(stock_code)
+        try:
+            df = self._call_api_with_rate_limit("share_float", ts_code=ts_code)
+        except Exception as exc:
+            logger.warning("[Tushare] share_float %s 失败: %s", stock_code, exc)
+            return []
+
+        if df is None or df.empty:
+            return []
+
+        from datetime import date, timedelta
+        today = date.today()
+        start = (today - timedelta(days=lookback_days)).strftime("%Y%m%d")
+        end = (today + timedelta(days=lookahead_days)).strftime("%Y%m%d")
+
+        df = df[(df["float_date"] >= start) & (df["float_date"] <= end)].copy()
+        if df.empty:
+            return []
+
+        results = []
+        for float_date, group in df.groupby("float_date"):
+            # 同一批次不同持有人 float_ratio 含义是各自占比，不能直接求和；
+            # float_share 可以求和得到本批次总解禁股数
+            total_share = group["float_share"].sum()
+            # ratio 取第一行（同批次值一样或近似）
+            total_ratio = group["float_ratio"].sum()
+            holders = group["holder_name"].dropna().tolist()
+            share_type = group["share_type"].iloc[0] if "share_type" in group.columns else ""
+            date_fmt = str(float_date)
+            if len(date_fmt) == 8 and date_fmt.isdigit():
+                date_fmt = f"{date_fmt[:4]}-{date_fmt[4:6]}-{date_fmt[6:]}"
+            results.append({
+                "float_date": date_fmt,
+                "total_share": int(total_share),
+                "total_ratio": round(float(total_ratio), 4),
+                "share_type": share_type,
+                "holders": holders[:5],  # 最多列 5 个
+            })
+
+        results.sort(key=lambda x: x["float_date"])
+        logger.info("[Tushare] share_float %s 窗口内 %d 批解禁", stock_code, len(results))
+        return results
+
+    def get_research_reports(
+        self,
+        stock_code: str,
+        max_count: int = 10,
+    ) -> list:
+        """通过 Tushare report_rc 接口获取券商研报列表（需 2000 积分）。
+
+        Returns:
+            [{"title", "date", "broker", "rating", "abstract", "analyst"}, ...]
+            失败返回 []
+        """
+        if self._api is None:
+            return []
+        if _is_us_code(stock_code) or _is_hk_market(stock_code):
+            return []
+
+        ts_code = self._convert_stock_code(stock_code)
+        try:
+            df = self._call_api_with_rate_limit(
+                "report_rc",
+                ts_code=ts_code,
+                limit=max_count,
+                offset=0,
+            )
+        except Exception as exc:
+            logger.warning("[Tushare] report_rc %s 失败: %s", stock_code, exc)
+            return []
+
+        if df is None or df.empty:
+            return []
+
+        seen: set = set()
+        records = []
+        for _, row in df.iterrows():
+            date_raw = str(row.get("report_date") or "")
+            # Tushare 返回 YYYYMMDD，统一转为 YYYY-MM-DD
+            if len(date_raw) == 8 and date_raw.isdigit():
+                date_raw = f"{date_raw[:4]}-{date_raw[4:6]}-{date_raw[6:]}"
+            title = str(row.get("report_title") or "")
+            key = (date_raw, title)
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append({
+                "title": title,
+                "date": date_raw[:10],
+                "broker": str(row.get("org_name") or ""),
+                "rating": str(row.get("rating") or ""),
+                "abstract": "",
+                "analyst": str(row.get("author_name") or ""),
+                "eps": (lambda v: float(v) if v not in (None, "") else None)(row.get("eps")),
+                "classify": str(row.get("classify") or ""),
+            })
+            if len(records) >= max_count:
+                break
+
+        logger.info("[Tushare] report_rc %s 获取 %d 条研报", stock_code, len(records))
+        return records
+
+    def get_announcements(
+        self,
+        stock_code: str,
+        max_count: int = 20,
+        lookback_days: int = 30,
+    ) -> list:
+        """获取个股上市公司公告（Tushare anns_d）。
+
+        Returns:
+            [{"ann_date": "YYYY-MM-DD", "title": str, "url": str}, ...]
+            最新在前，失败返回 []
+        """
+        if self._api is None or _is_us_code(stock_code) or _is_hk_market(stock_code):
+            return []
+
+        from datetime import date, timedelta
+        ts_code = self._convert_stock_code(stock_code)
+        start_date = (date.today() - timedelta(days=lookback_days)).strftime("%Y%m%d")
+
+        try:
+            df = self._call_api_with_rate_limit(
+                "anns_d",
+                ts_code=ts_code,
+                start_date=start_date,
+                limit=max_count,
+            )
+        except Exception as exc:
+            logger.warning("[Tushare] anns_d %s 失败: %s", stock_code, exc)
+            return []
+
+        if df is None or df.empty:
+            return []
+
+        records = []
+        for _, row in df.iterrows():
+            date_raw = str(row.get("ann_date") or "")
+            if len(date_raw) == 8 and date_raw.isdigit():
+                date_raw = f"{date_raw[:4]}-{date_raw[4:6]}-{date_raw[6:]}"
+            records.append({
+                "ann_date": date_raw,
+                "title": str(row.get("title") or ""),
+                "url": str(row.get("url") or ""),
+            })
+
+        logger.info("[Tushare] anns_d %s 获取 %d 条公告", stock_code, len(records))
+        return records
 
 
 if __name__ == "__main__":

@@ -2653,6 +2653,15 @@ class DataFetcherManager:
 
         result_ctx["belong_boards"] = belong_boards
 
+        # 解禁计划（fail-open，不影响 status 判断）
+        try:
+            from data_provider.tushare_fetcher import TushareFetcher as _TF
+            _ts = self._get_fetcher_by_name("TushareFetcher")
+            if isinstance(_ts, _TF):
+                result_ctx["share_float"] = _ts.get_share_float(stock_code)
+        except Exception as _sf_exc:
+            logger.debug("share_float %s 跳过: %s", stock_code, _sf_exc)
+
         block_statuses = {
             "valuation": result_ctx["valuation"].get("status", "not_supported"),
             "growth": growth_status,
@@ -2974,6 +2983,15 @@ class DataFetcherManager:
                 stock_code,
                 budget_seconds=min(fetch_timeout, remaining_seconds),
             )
+
+        # 解禁计划（fail-open，不影响 status 判断）
+        try:
+            from data_provider.tushare_fetcher import TushareFetcher as _TF
+            _ts = self._get_fetcher_by_name("TushareFetcher")
+            if isinstance(_ts, _TF):
+                result_ctx["share_float"] = _ts.get_share_float(stock_code)
+        except Exception as _sf_exc:
+            logger.debug("share_float %s 跳过: %s", stock_code, _sf_exc)
 
         block_statuses = {
             "valuation": result_ctx["valuation"].get("status", "not_supported"),
@@ -3400,7 +3418,8 @@ class DataFetcherManager:
         try:
             from data_provider.research_report_fetcher import get_research_context
 
-            payload = get_research_context(stock_code, max_count=max_count)
+            ts_fetcher = self._get_fetcher_by_name("TushareFetcher")
+            payload = get_research_context(stock_code, max_count=max_count, tushare_fetcher=ts_fetcher)
         except Exception as exc:
             cost_ms = int((_time.time() - t0) * 1000)
             return self._build_fundamental_block(

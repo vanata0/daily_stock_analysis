@@ -763,6 +763,14 @@ class AgentExecutor:
 
         if parse_dashboard and loop_result.success:
             dashboard = parse_dashboard_json(loop_result.content)
+            if dashboard is None:
+                logger.warning(
+                    "Dashboard parse failed after agent completed. "
+                    "total_steps=%d total_tokens=%d content_len=%d",
+                    loop_result.total_steps,
+                    loop_result.total_tokens,
+                    len(loop_result.content or ""),
+                )
             return AgentResult(
                 success=dashboard is not None,
                 content=loop_result.content,

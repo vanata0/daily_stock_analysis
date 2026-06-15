@@ -37,10 +37,11 @@ source venv/bin/activate
 mkdir -p logs
 case "$TARGET" in
   serve|web|api)
-    info "启动 API 服务（后台）..."
-    nohup python3 main.py --serve-only >> "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
-    ok "server 已启动 (PID $(cat $PID_FILE))，日志: logs/server.log"
+    info "重启 API 服务（systemd 管理）..."
+    systemctl --user restart dsa-webui.service
+    sleep 3
+    PID=$(systemctl --user show -p MainPID --value dsa-webui.service 2>/dev/null)
+    ok "server 已重启 (PID ${PID:-?})，日志: logs/server.log"
     ;;
   schedule)
     info "启动定时任务（后台）..."
@@ -53,7 +54,9 @@ case "$TARGET" in
     python3 main.py
     ;;
   stop)
-    ok "服务已停止（无需重启）"
+    info "停止 API 服务..."
+    systemctl --user stop dsa-webui.service
+    ok "服务已停止"
     ;;
   *)
     echo "用法: ./restart.sh [serve|schedule|run|stop]"

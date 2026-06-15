@@ -252,7 +252,11 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
         if parsed is not None:
             return parsed
 
-    logger.warning("Failed to parse dashboard JSON from agent response")
+    logger.warning(
+        "Failed to parse dashboard JSON from agent response. "
+        "Raw content (first 1000 chars): %s",
+        content[:1000],
+    )
     return None
 
 

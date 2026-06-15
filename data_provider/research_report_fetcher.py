@@ -194,8 +194,14 @@ def get_eps_forecast(stock_code: str, timeout: int = 15) -> Dict[str, Any]:
     return result
 
 
-def get_research_context(stock_code: str, max_count: int = 5) -> Dict[str, Any]:
+def get_research_context(
+    stock_code: str,
+    max_count: int = 5,
+    tushare_fetcher=None,
+) -> Dict[str, Any]:
     """聚合研报+EPS 预测，返回适合 agent 消费的 context 块。
+
+    优先使用 Tushare report_rc（质量更高），失败时 fallback 到东财 reportapi。
 
     Returns:
         {
@@ -210,13 +216,23 @@ def get_research_context(stock_code: str, max_count: int = 5) -> Dict[str, Any]:
     errors: List[str] = []
     source_chain: List[str] = []
 
-    # --- 研报列表 ---
+    # --- 研报列表：Tushare 优先，东财兜底 ---
     reports: List[Dict[str, Any]] = []
-    try:
-        reports = get_research_reports(stock_code, max_count=max_count)
-        source_chain.append("eastmoney_reportapi")
-    except Exception as exc:
-        errors.append(f"reportapi:{type(exc).__name__}")
+    if tushare_fetcher is not None:
+        try:
+            ts_reports = tushare_fetcher.get_research_reports(stock_code, max_count=max_count)
+            if ts_reports:
+                reports = ts_reports
+                source_chain.append("tushare_report_rc")
+        except Exception as exc:
+            errors.append(f"tushare_report_rc:{type(exc).__name__}")
+
+    if not reports:
+        try:
+            reports = get_research_reports(stock_code, max_count=max_count)
+            source_chain.append("eastmoney_reportapi")
+        except Exception as exc:
+            errors.append(f"reportapi:{type(exc).__name__}")
 
     # --- EPS 预测 ---
     eps: Dict[str, Any] = {}

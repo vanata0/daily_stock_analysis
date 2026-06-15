@@ -627,6 +627,7 @@ class Config:
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
+    tushare_api_url: str = "http://api.tushare.pro"
     tickflow_api_key: Optional[str] = None
     mairui_api_key: Optional[str] = None
     finnhub_api_key: Optional[str] = None
@@ -1423,6 +1424,7 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
+            tushare_api_url=os.getenv('TUSHARE_API_URL', 'http://api.tushare.pro'),
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
             mairui_api_key=os.getenv('MAIRUI_API_KEY') or None,
             finnhub_api_key=os.getenv('FINNHUB_API_KEY') or None,

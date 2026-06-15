@@ -160,6 +160,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响部分 A 股基础数据、股票列表和相关增强数据获取。'],
     notes: ['不要把 token 提交到仓库或公开日志。'],
   },
+  'settings.data_source.TUSHARE_API_URL': {
+    title: 'Tushare API 地址',
+    summary: 'Tushare Pro 的 API 请求地址，默认为官方节点；网络受限时可替换为代理节点。',
+    usage: '留空或填 http://api.tushare.pro 使用官方节点；有代理节点时填入代理 URL（如 http://111.170.140.159:8020/）。',
+    valueNotes: ['代理节点需兼容 Tushare Pro 的 HTTP POST JSON 协议。', '修改后需重启服务生效。'],
+    impact: ['影响所有 Tushare 接口请求的目标地址。'],
+    notes: ['代理节点由第三方提供，请确认来源可信。'],
+  },
   'settings.data_source.TICKFLOW_API_KEY': {
     title: 'TickFlow API Key',
     summary: '用于增强大盘复盘中的指数、市场统计等数据。',
@@ -1158,6 +1166,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Available APIs depend on your Tushare permission level.'],
     impact: ['Affects some A-share base data, stock lists, and enrichment data.'],
     notes: ['Do not commit the token or print it in public logs.'],
+  },
+  'settings.data_source.TUSHARE_API_URL': {
+    title: 'Tushare API URL',
+    summary: 'Endpoint for Tushare Pro requests. Defaults to the official node; replace with a proxy when the official endpoint is unreachable.',
+    usage: 'Leave blank or set to http://api.tushare.pro for the official node. Set a proxy URL (e.g. http://your-host:8020/) when needed.',
+    valueNotes: ['The proxy must be compatible with Tushare Pro HTTP POST JSON protocol.', 'Restart the service after changing this value.'],
+    impact: ['Applies to all Tushare API requests.'],
+    notes: ['Only use proxy nodes from trusted sources.'],
   },
   'settings.data_source.TICKFLOW_API_KEY': {
     title: 'TickFlow API Key',

@@ -3207,6 +3207,29 @@ class GeminiAnalyzer:
                         )
                     prompt += "\n> 研报评级仅供参考，需结合技术面和基本面综合判断。\n"
 
+        # 解禁计划
+        _sf_list = (
+            fundamental_context.get("share_float")
+            if isinstance(fundamental_context, dict)
+            else None
+        )
+        if _sf_list:
+            from datetime import date as _date
+            _today_str = _date.today().isoformat()
+            prompt += "\n### 解禁计划（近30天～未来90天）\n"
+            for _sf in _sf_list:
+                _label = "【已解禁】" if _sf["float_date"] < _today_str else "【待解禁】"
+                _holders_str = "、".join(_sf["holders"][:3])
+                if len(_sf["holders"]) > 3:
+                    _holders_str += f" 等{len(_sf['holders'])}方"
+                prompt += (
+                    f"- {_label} {_sf['float_date']}  "
+                    f"{_sf['share_type']}  "
+                    f"合计 {_sf['total_share']:,} 股（占比 {_sf['total_ratio']:.2f}%）  "
+                    f"持有人：{_holders_str}\n"
+                )
+            prompt += "\n> 解禁压力需结合当前股价与持仓成本综合判断。\n"
+
         # 添加筹码分布数据
         if 'chip' in context:
             chip = context['chip']

@@ -228,5 +228,9 @@ limitation must be reflected in ``confidence_reason`` or ``data_limitations``.
         else:
             # Even if JSON parsing fails, store the raw text for downstream use
             ctx.set_data("final_dashboard_raw", raw_text)
-            logger.warning("[DecisionAgent] failed to parse dashboard JSON")
+            logger.warning(
+                "[DecisionAgent] failed to parse dashboard JSON. "
+                "Raw response (first 800 chars): %s",
+                (raw_text or "")[:800],
+            )
             return None

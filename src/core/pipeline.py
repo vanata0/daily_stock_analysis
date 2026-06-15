@@ -517,6 +517,25 @@ class StockAnalysisPipeline:
             else:
                 logger.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
 
+            # Step 4.2: Tushare 上市公司公告（A股专用，一手信息优先置顶）
+            if market == "cn":
+                try:
+                    _ts_fetcher = self.fetcher_manager._get_fetcher_by_name("TushareFetcher")
+                    if _ts_fetcher is not None:
+                        _anns = _ts_fetcher.get_announcements(code, max_count=15, lookback_days=30)
+                        if _anns:
+                            _ann_lines = [f"### 【公司公告】{stock_name}({code}) 近期公告（巨潮/上交所）\n"]
+                            for _a in _anns:
+                                _line = f"- [{_a['ann_date']}] {_a['title']}"
+                                if _a.get("url"):
+                                    _line += f"\n  原文：{_a['url']}"
+                                _ann_lines.append(_line)
+                            _ann_ctx = "\n".join(_ann_lines)
+                            news_context = _ann_ctx if not news_context else _ann_ctx + "\n\n" + news_context
+                            logger.info("%s(%s) Tushare公告注入: %d 条", stock_name, code, len(_anns))
+                except Exception as _exc:
+                    logger.warning("%s(%s) Tushare公告获取失败: %s", stock_name, code, _exc)
+
             # Step 4.3: 东财个股新闻（A股专用）
             # 策略：搜索服务无结果时作为主要来源；有结果时追加到末尾补充实时公告
             if market == "cn":
@@ -1164,6 +1183,59 @@ class StockAnalysisPipeline:
                         logger.info(f"[{code}] Agent mode: social sentiment data injected into news_context")
                 except Exception as e:
                     logger.warning(f"[{code}] Agent mode: social sentiment fetch failed: {e}")
+
+            # Agent path: inject announcements + eastmoney news for A-share (cn market)
+            # Steps 4.2/4.3 only run in the non-agent path; mirror them here.
+            # Note: `market` is computed below at line ~1222; derive it inline here.
+            _agent_market = get_market_for_stock(normalize_stock_code(code))
+            if _agent_market == "cn":
+                # Step 4.2 mirror: Tushare 公告（置顶，一手信息）
+                try:
+                    _ts_fetcher = self.fetcher_manager._get_fetcher_by_name("TushareFetcher")
+                    if _ts_fetcher is not None:
+                        _anns = _ts_fetcher.get_announcements(code, max_count=15, lookback_days=30)
+                        if _anns:
+                            _ann_lines = [f"### 【公司公告】{stock_name}({code}) 近期公告（巨潮/上交所）\n"]
+                            for _a in _anns:
+                                _line = f"- [{_a['ann_date']}] {_a['title']}"
+                                if _a.get("url"):
+                                    _line += f"\n  原文：{_a['url']}"
+                                _ann_lines.append(_line)
+                            _ann_ctx = "\n".join(_ann_lines)
+                            existing = initial_context.get("news_context")
+                            initial_context["news_context"] = (
+                                _ann_ctx if not existing else _ann_ctx + "\n\n" + existing
+                            )
+                            logger.info("[%s] Agent mode: announcements injected (%d)", code, len(_anns))
+                except Exception as _exc:
+                    logger.warning("[%s] Agent mode: announcements fetch failed: %s", code, _exc)
+
+                # Step 4.3 mirror: 东财个股新闻（追加在公告之后）
+                try:
+                    from data_provider.eastmoney_news_fetcher import (
+                        get_stock_news,
+                        format_stock_news_context,
+                    )
+                    _em_news = get_stock_news(code, page_size=15)
+                    if _em_news:
+                        _em_news_ctx = format_stock_news_context(
+                            _em_news,
+                            stock_name,
+                            code,
+                            max_items=10,
+                            max_age_days=30,
+                        )
+                        if _em_news_ctx:
+                            existing = initial_context.get("news_context")
+                            initial_context["news_context"] = (
+                                _em_news_ctx if not existing else existing + "\n\n" + _em_news_ctx
+                            )
+                            logger.info(
+                                "[%s] Agent mode: eastmoney news injected (%d items)",
+                                code, len(_em_news),
+                            )
+                except Exception as _exc:
+                    logger.warning("[%s] Agent mode: eastmoney news fetch failed: %s", code, _exc)
 
             # Issue #1066: ensure deep history is in DB before agent tools run
             self._ensure_agent_history(code)

@@ -1302,9 +1302,13 @@ python main.py --debug
 
 #1390 P0 不会把后续信号资产字段平铺到现有 summary、历史列表、StockBar 或回测响应。#1390 P1 开始通过独立 `DecisionSignal` 资源承接 `horizon`、`plan_quality`、`status` 等更细粒度计划字段，仍不改变既有报告主契约、不回填历史、不新增配置项。
 
-### 决策信号资产（#1390 P1）
+### 决策信号资产（#1390 P1/P2）
 
-`DecisionSignal` 是独立后端资源，用于把 AI 建议沉淀为可查询、可去重、可更新状态的信号资产。它不替换 `operation_advice`、不扩展 `decision_type=buy|hold|sell`，也不会自动从现有报告提取；P2 之前只有显式调用 API 或 service 的路径会写入信号。
+`DecisionSignal` 是独立后端资源，用于把 AI 建议沉淀为可查询、可去重、可更新状态的信号资产。它不替换 `operation_advice`、不扩展 `decision_type=buy|hold|sell`。#1390 P2 开始，普通个股分析和 Agent 个股分析在分析历史保存成功后，会从最终 `AnalysisResult` best-effort 提取一条 `source_type=analysis` 的信号；显式 API 或 service 调用仍然保留。
+
+自动提取只消费已生成报告中的结构化字段，不重新解析 Markdown，也不回填旧历史、不新增配置项、不改变报告主契约。提取失败、建议动作未知或歧义、非个股报告、无法识别市场时会跳过写入，不影响分析报告保存。`source_report_id` 使用刚保存的 `AnalysisHistory.id`；`trace_id` 优先使用运行诊断 trace，缺失时降级到 pipeline trace 或 `query_id`；`stock_name` 来自 `AnalysisResult.name`；`trigger_source` 来自运行入口，缺失时为 `system`。
+
+P2 自动提取的市场阶段优先读取保存快照中的 `market_phase_summary.phase`，其次读取 `AnalysisResult.market_phase_summary.phase`；数据质量优先读取保存快照中的 `analysis_context_pack_overview.data_quality`，其次读取 `AnalysisResult.analysis_context_pack_overview.data_quality`。价格计划复用历史保存的狙击点解析规则，从 `dashboard.battle_plan.sniper_points.ideal_buy/secondary_buy/stop_loss/take_profit` 映射到 `entry_low/entry_high/stop_loss/target_price`；只有 `ideal_buy` 时写入 `entry_low`，只有 `secondary_buy` 时写入 `entry_high`，两者同时存在时按有效价格排序为 `entry_low <= entry_high`。缺失止损或目标价只会降低 service 自动计算的 `plan_quality`，不会编造字段。`watch_conditions` 优先读取 `dashboard.phase_decision.watch_conditions`，没有时才读取 `dashboard.battle_plan.action_checklist`；`catalyst_summary` 仅在 `dashboard.intelligence.positive_catalysts` 存在且为列表时写入。`confidence` 由报告置信等级做保守映射：`高/high=0.8`、`中/medium/mid=0.6`、`低/low=0.4`，原始置信等级保留在 `metadata`。
 
 核心字段包括 `stock_code`、`stock_name`、`market`、`source_type`、`source_agent`、`source_report_id`、`trace_id`、`market_phase`、`trigger_source`、`action`、`action_label`、`confidence`、`score`、`horizon`、`entry_low`、`entry_high`、`stop_loss`、`target_price`、`invalidation`、`watch_conditions`、`reason`、`risk_summary`、`catalyst_summary`、`evidence`、`data_quality_summary`、`plan_quality`、`status`、`expires_at`、`created_at`、`updated_at` 和 `metadata`。`action` 复用八态建议动作；`market_phase` 复用市场阶段枚举；`source_type` 支持 `analysis|agent|alert|market_review|manual`；`status` 支持 `active|expired|invalidated|closed|archived`；`horizon` 支持 `intraday|1d|3d|5d|10d|swing|long`。
 

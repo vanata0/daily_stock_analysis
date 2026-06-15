@@ -175,6 +175,7 @@ export type AlphaSiftHotspotsResponse = {
   sourceErrors?: string[];
   stale?: boolean;
   staleAgeHours?: number | null;
+  message?: string | null;
   hotspots: AlphaSiftHotspot[];
   hotspotCount: number;
   details?: Record<string, AlphaSiftHotspotDetail>;

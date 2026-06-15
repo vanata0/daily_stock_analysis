@@ -65,10 +65,12 @@ from src.services.run_diagnostics import (
     get_current_diagnostic_context,
     record_history_run,
     record_llm_run,
+    record_llm_run_started,
     record_notification_run,
     reset_run_diagnostic_context,
     sanitize_diagnostic_text,
 )
+from src.services.decision_signal_extractor import extract_and_persist_from_analysis_result
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import (
@@ -680,6 +682,10 @@ class StockAnalysisPipeline:
             self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告")
             llm_started_at = time.monotonic()
             try:
+                record_llm_run_started(
+                    model=getattr(self.config, "litellm_model", None),
+                    call_type="analysis",
+                )
                 result = self.analyzer.analyze(
                     enhanced_context,
                     news_context=news_context,
@@ -777,7 +783,7 @@ class StockAnalysisPipeline:
                         market_phase_summary=market_phase_summary,
                     )
                     result.diagnostic_context_snapshot = context_snapshot
-                    saved_count = self.db.save_analysis_history(
+                    saved_history_id = self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
                         report_type=report_type.value,
@@ -785,10 +791,26 @@ class StockAnalysisPipeline:
                         context_snapshot=context_snapshot,
                         save_snapshot=self.save_context_snapshot
                     )
-                    record_history_run(
-                        report_saved=bool(saved_count),
-                        metadata_saved=bool(saved_count),
+                    valid_saved_history_id = (
+                        isinstance(saved_history_id, int)
+                        and not isinstance(saved_history_id, bool)
+                        and saved_history_id > 0
                     )
+                    record_history_run(
+                        report_saved=bool(saved_history_id),
+                        metadata_saved=bool(saved_history_id),
+                        analysis_history_id=(
+                            saved_history_id if valid_saved_history_id else None
+                        ),
+                    )
+                    if valid_saved_history_id:
+                        self._extract_decision_signal_after_history_save(
+                            result=result,
+                            query_id=query_id,
+                            source_report_id=saved_history_id,
+                            report_type=report_type.value,
+                            context_snapshot=context_snapshot,
+                        )
                 except Exception as e:
                     record_history_run(
                         report_saved=False,
@@ -1271,6 +1293,10 @@ class StockAnalysisPipeline:
                 message = f"请分析股票 {code} ({stock_name})，并生成决策仪表盘报告。"
             llm_started_at = time.monotonic()
             try:
+                record_llm_run_started(
+                    model=getattr(self.config, "agent_litellm_model", None),
+                    call_type="agent_analysis",
+                )
                 agent_result = executor.run(message, context=initial_context)
             except Exception as exc:
                 record_llm_run(
@@ -1409,7 +1435,7 @@ class StockAnalysisPipeline:
                     )
                     result.diagnostic_context_snapshot = agent_context_snapshot
                     agent_context_snapshot["stock_name"] = resolved_stock_name
-                    saved_count = self.db.save_analysis_history(
+                    saved_history_id = self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
                         report_type=report_type.value,
@@ -1417,10 +1443,26 @@ class StockAnalysisPipeline:
                         context_snapshot=agent_context_snapshot,
                         save_snapshot=self.save_context_snapshot,
                     )
-                    record_history_run(
-                        report_saved=bool(saved_count),
-                        metadata_saved=bool(saved_count),
+                    valid_saved_history_id = (
+                        isinstance(saved_history_id, int)
+                        and not isinstance(saved_history_id, bool)
+                        and saved_history_id > 0
                     )
+                    record_history_run(
+                        report_saved=bool(saved_history_id),
+                        metadata_saved=bool(saved_history_id),
+                        analysis_history_id=(
+                            saved_history_id if valid_saved_history_id else None
+                        ),
+                    )
+                    if valid_saved_history_id:
+                        self._extract_decision_signal_after_history_save(
+                            result=result,
+                            query_id=query_id,
+                            source_report_id=saved_history_id,
+                            report_type=report_type.value,
+                            context_snapshot=agent_context_snapshot,
+                        )
                     latest_diagnostic_snapshot = current_diagnostic_snapshot()
                     if latest_diagnostic_snapshot is not None:
                         agent_context_snapshot["diagnostics"] = latest_diagnostic_snapshot
@@ -2201,6 +2243,47 @@ class StockAnalysisPipeline:
         if self.analysis_skills is not None:
             snapshot["skills"] = list(self.analysis_skills)
         return snapshot
+
+    def _extract_decision_signal_after_history_save(
+        self,
+        *,
+        result: AnalysisResult,
+        query_id: str,
+        source_report_id: int,
+        report_type: str,
+        context_snapshot: Dict[str, Any],
+    ) -> None:
+        """Best-effort DecisionSignal extraction after analysis history is saved."""
+
+        assert (
+            isinstance(source_report_id, int)
+            and not isinstance(source_report_id, bool)
+            and source_report_id > 0
+        )
+
+        try:
+            diagnostic_context = get_current_diagnostic_context()
+            trace_id = (
+                getattr(diagnostic_context, "trace_id", None)
+                or getattr(self, "trace_id", None)
+                or query_id
+            )
+            extract_and_persist_from_analysis_result(
+                result,
+                context_snapshot=context_snapshot,
+                source_report_id=source_report_id,
+                trace_id=str(trace_id),
+                query_source=getattr(self, "query_source", None) or "system",
+                report_type=report_type,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Decision signal extraction skipped after history save: query_id=%s stock_code=%s error=%s",
+                query_id,
+                getattr(result, "code", None),
+                exc,
+                exc_info=True,
+            )
 
     @staticmethod
     def _build_notification_run_snapshot(

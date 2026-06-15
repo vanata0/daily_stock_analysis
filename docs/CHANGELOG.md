@@ -99,6 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 美股中文场景下，市场标签与策略蓝图（`Strategy Blueprint/Strategy Framework`）已本地化为中文显示，避免 `report_language=zh` 下混入英文策略段落与市场标签；与 Issue #1555 的历史/即时结果一致。
 - [修复] Docker Web 设置页读取配置时在活跃 `.env` 文件缺项时回退展示启动注入的同名环境变量，并补清 `env_file` / `--env-file`、`ENV_FILE=/app/data/runtime.env` 与单文件 `.env` 挂载边界文档。
 - [文档] 补充说明：LLM / LiteLLM 兼容键的回退仅用于 Settings 界面展示与校验上下文拼装，不改写、不迁移、不清理用户现有的 provider/model/base URL 持久化配置；未发生 provider / model / base URL 语义迁移，仅保留同名启动注入的展示级兜底。兼容边界依据 `requirements.txt`（`litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`、`openai>=1.0.0`）；官方语义来源：[LiteLLM OpenAI-compatible](https://docs.litellm.ai/docs/providers/openai_compatible)、[OpenAI Chat Completion API](https://platform.openai.com/docs/api-reference/chat/create)。回退/恢复路径为：重启/更新后清理同名 `env_file` / `--env-file` / `environment` 覆盖后使用持久化保存值，或通过桌面端导入/导出 `.env` 片段恢复；仅在 WebUI 未改写同名启动注入值时才会按该片段接管。验证回归点见 `tests/test_system_config_service.py::test_get_config_uses_runtime_env_as_display_fallback`、`tests/test_system_config_service.py::test_get_config_runtime_env_fallback_does_not_persist_llm_fields_on_save`、`tests/test_system_config_service.py::test_runtime_env_fallback_does_not_override_saved_provider_and_base_url_settings`、以及 `tests/test_system_config_api.py` 的 `/api/v1/system/config` 获取/保存链路回归。
+- [修复] AlphaSift 热点题材刷新在 EastMoney 瞬断且无缓存时返回友好空态，并让桌面更新保留 AlphaSift 热点缓存。
 - [修复] 问股从历史报告进入后的追问会持续携带当前标的，切回或重载已有会话时可从历史消息恢复基础当前标的，并由后端阻断未明确切换时的错误股票工具调用、交易所片段和指标缩写误路由。
 - [修复] 自选股加入和删除按等价股票代码匹配港股及大小写美股变体，避免 `00700`、`HK00700`、`00700.HK` 或 `aapl`、`AAPL` 被误判为不同标的。
 - [改进] #1390 P0 为个股分析与历史/回测展示新增可选八态 `action` / `action_label` 建议动作字段，保留 `operation_advice` 自由文本和 `decision_type=buy|hold|sell` 统计口径，不新增迁移或配置项。
@@ -111,8 +112,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 修复历史报告运行流快照在混合时区事件时间戳下返回 500 的问题。
 - [改进] #1459 持仓管理页新增持仓账户删除入口，复用现有账户软删除接口，误建账户会从默认列表、快照、风险、录入入口和事件列表隐藏且不物理清理历史流水。
 - [修复] 修复运行流 live SSE 事件未复用快照层递归脱敏规则的问题，避免本地路径、prompt/raw response、代理头等敏感诊断字段在 refetch 前短暂暴露。
+- [修复] 修复 Web 首页分析任务卡片在窄侧栏下挤压股票信息、进度和运行诊断文案的问题。
+- [修复] 隔离个股分析自动生成的大盘上下文运行诊断，避免大盘复盘与个股报告共用 query_id 导致运行流重复展示“保存报告”和“推送通知”，并兼容通知跳过时 `attempts=0` 的运行流快照。
+- [改进] 运行流 active task 增加 provider 与 LLM started 实时事件，长耗时步骤开始时先显示 running 卡片，完成后复用同一节点更新结果，避免重复卡片。
+- [修复] 运行流为筹码分布补齐 provider started/result 事件，个股分析触发筹码数据源调用时可显示“筹码结构”运行卡片并记录降级尝试。
+- [修复] 修复个股运行流活跃任务后期 LLM/通知卡片临时重复、数据源聚合卡片过早显示成功，并为个股所属板块补齐运行流卡片。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [修复] 发布说明生成查询 PR 作者失败时保留降级并输出包含 PR 编号和异常类型的 warning，便于排查 token、权限、网络或 GitHub API 异常。
+- [改进] DSA 数据源链路新增 Tencent 日 K 直连 fetcher、daily source health 短期熔断，并升级 AlphaSift 默认 pin/runtime bridge，默认启用 `DAILY_SOURCE=auto`、Sina snapshot 优先级和候选级 quote context。
+- [文档] 补充 AlphaSift 迁移与回退边界：明确 `ALPHASIFT_INSTALL_SPEC` 显式覆盖语义、`requirements.txt + DEFAULT_ALPHASIFT_INSTALL_SPEC` 与运行时兼容边界、以及回滚路径（关闭功能/完整 revert）说明，覆盖旧 pin 用户升级行为。
+
+- [新功能] 个股分析历史成功保存后会从最终报告 best-effort 提取 `DecisionSignal` 决策信号，复用现有信号去重、计划质量计算和脱敏契约。
 
 ## [3.22.0] - 2026-06-13
 

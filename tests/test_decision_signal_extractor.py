@@ -77,7 +77,12 @@ def test_build_payload_maps_report_context_and_price_plan() -> None:
     result.market_phase_summary = {"phase": "postmarket"}
     result.analysis_context_pack_overview = {"data_quality": {"overall_score": 55, "level": "fair"}}
     context_snapshot = {
-        "market_phase_summary": {"phase": "intraday"},
+        "market_phase_summary": {
+            "phase": "intraday",
+            "session_date": "2026-06-15",
+            "minutes_to_open": None,
+            "minutes_to_close": 120,
+        },
         "analysis_context_pack_overview": {
             "data_quality": {"overall_score": 91, "level": "good"},
         },
@@ -113,6 +118,11 @@ def test_build_payload_maps_report_context_and_price_plan() -> None:
     assert payload["risk_summary"] == ["跌破支撑需止损", "估值偏高"]
     assert payload["catalyst_summary"] == ["业绩超预期"]
     assert payload["metadata"]["report_confidence_level"] == "高"
+    assert payload["metadata"]["market_phase_summary"] == {
+        "phase": "intraday",
+        "session_date": "2026-06-15",
+        "minutes_to_close": 120,
+    }
 
 
 def test_build_payload_uses_result_fallbacks_and_optional_catalysts() -> None:
@@ -261,6 +271,8 @@ def test_extract_and_persist_reuses_service_dedup_and_sanitization(isolated_db) 
     assert second["created"] is False
     assert first["item"]["reason"] == "趋势确认 token=[REDACTED]"
     assert first["item"]["plan_quality"] == "complete"
+    assert first["item"]["horizon"] == "intraday"
+    assert first["item"]["expires_at"] is not None
 
     listed = service.list_signals(source_report_id=901)
     assert listed["total"] == 1
@@ -289,6 +301,8 @@ def test_extract_and_persist_missing_price_plan_does_not_fabricate_fields(isolat
     assert created is not None
     item = created["item"]
     assert item["plan_quality"] == "minimal"
+    assert item["horizon"] == "3d"
+    assert item["expires_at"] is not None
     assert item["entry_low"] is None
     assert item["entry_high"] is None
     assert item["stop_loss"] is None

@@ -66,6 +66,16 @@ def build_decision_signal_payload_from_report(
         sniper_points.get("secondary_buy"),
     )
 
+    metadata = {
+        "report_type": report_type,
+        "decision_type": getattr(result, "decision_type", None),
+        "report_confidence_level": getattr(result, "confidence_level", None),
+        "report_language": getattr(result, "report_language", None),
+    }
+    market_phase_summary = _extract_market_phase_summary(context_snapshot, result)
+    if market_phase_summary:
+        metadata["market_phase_summary"] = market_phase_summary
+
     payload: Dict[str, Any] = {
         "stock_code": raw_code,
         "stock_name": getattr(result, "name", None),
@@ -93,12 +103,7 @@ def build_decision_signal_payload_from_report(
         "watch_conditions": _watch_conditions(dashboard),
         "evidence": _evidence(result, sniper_points),
         "data_quality_summary": _extract_data_quality(context_snapshot, result),
-        "metadata": {
-            "report_type": report_type,
-            "decision_type": getattr(result, "decision_type", None),
-            "report_confidence_level": getattr(result, "confidence_level", None),
-            "report_language": getattr(result, "report_language", None),
-        },
+        "metadata": metadata,
         "report_language": getattr(result, "report_language", None),
     }
     return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
@@ -181,6 +186,22 @@ def _extract_market_phase(context_snapshot: Optional[Mapping[str, Any]], result:
         return str(snapshot_phase)
     result_phase = _as_mapping(getattr(result, "market_phase_summary", None)).get("phase")
     return str(result_phase) if result_phase else None
+
+
+def _extract_market_phase_summary(
+    context_snapshot: Optional[Mapping[str, Any]],
+    result: AnalysisResult,
+) -> Optional[Dict[str, Any]]:
+    raw_summary = _as_mapping(_as_mapping(context_snapshot).get("market_phase_summary"))
+    if not raw_summary:
+        raw_summary = _as_mapping(getattr(result, "market_phase_summary", None))
+    allowed_fields = ("phase", "session_date", "minutes_to_open", "minutes_to_close")
+    summary = {
+        field_name: raw_summary.get(field_name)
+        for field_name in allowed_fields
+        if raw_summary.get(field_name) not in (None, "")
+    }
+    return summary or None
 
 
 def _extract_data_quality(context_snapshot: Optional[Mapping[str, Any]], result: AnalysisResult) -> Optional[Any]:

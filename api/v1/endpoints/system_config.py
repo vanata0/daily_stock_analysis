@@ -95,7 +95,11 @@ def _raise_env_backup_access_error(exc: EnvBackupAccessDenied) -> None:
         500: {"description": "Internal server error", "model": ErrorResponse},
     },
     summary="Get system configuration",
-    description="Read current configuration from .env and return raw values.",
+    description=(
+        "Read current configuration and return display values. Server-masked "
+        "sensitive fields may return the mask token; clients should use "
+        "raw_value_exists and is_masked to interpret values."
+    ),
 )
 def get_system_config(
     include_schema: bool = Query(True, description="Whether to include schema metadata"),

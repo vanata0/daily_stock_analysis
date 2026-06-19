@@ -116,7 +116,10 @@ class SystemConfigService:
             "skill": "specialist",
         }
     }
-    _SERVER_MASKED_CONFIG_KEYS: Set[str] = {"ALPHASIFT_INSTALL_SPEC"}
+    _SERVER_MASKED_CONFIG_KEYS: Set[str] = {
+        "ALPHASIFT_INSTALL_SPEC",
+        "LLM_USAGE_HMAC_SECRET",
+    }
     _NOTIFICATION_TEST_CHANNELS: Tuple[str, ...] = (
         "wechat",
         "feishu",
@@ -350,7 +353,7 @@ class SystemConfigService:
         return cls._build_display_config_map(runtime_map)
 
     def get_config(self, include_schema: bool = True, mask_token: str = "******") -> Dict[str, Any]:
-        """Return current config values without server-side secret masking."""
+        """Return display config values with mask metadata for server-masked fields."""
         saved_config_map = self._build_display_config_map(self._manager.read_config_map())
         runtime_config_map = self._build_runtime_display_config_map(saved_config_map)
         config_map = {

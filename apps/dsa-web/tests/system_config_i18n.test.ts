@@ -12,6 +12,8 @@ const requiredLocalizedKeys = [
   'PYTDX_PORT',
   'PYTDX_SERVERS',
   'BIAS_THRESHOLD',
+  'LLM_USAGE_HMAC_SECRET',
+  'LLM_USAGE_HMAC_KEY_VERSION',
   'TELEGRAM_BOT_TOKEN',
   'TELEGRAM_CHAT_ID',
   'TELEGRAM_MESSAGE_THREAD_ID',
@@ -90,6 +92,16 @@ describe('systemConfigI18n required key coverage', () => {
 
     expect(title).toBe('SearXNG 自建实例地址');
     expect(title).not.toBe('SearXNG Base URLs');
+  });
+
+  it('documents LLM usage HMAC privacy boundaries', () => {
+    const zh = getSettingsHelpContent('settings.ai_model.LLM_USAGE_HMAC_SECRET', undefined, 'zh-CN');
+    const en = getSettingsHelpContent('settings.ai_model.LLM_USAGE_HMAC_SECRET', undefined, 'en');
+
+    expect(zh?.summary).toContain('HMAC');
+    expect(zh?.notes?.join(' ')).toContain('不要');
+    expect(en?.summary).toContain('HMAC');
+    expect(en?.notes?.join(' ')).toContain('Do not');
   });
 });
 

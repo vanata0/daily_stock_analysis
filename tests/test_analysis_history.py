@@ -34,7 +34,14 @@ except ModuleNotFoundError:
     get_stock_bar = None
 
 from src.config import Config
-from src.storage import DatabaseManager, AnalysisHistory, BacktestResult, DecisionSignalRecord
+from src.storage import (
+    DatabaseManager,
+    AnalysisHistory,
+    BacktestResult,
+    DecisionSignalFeedbackRecord,
+    DecisionSignalOutcomeRecord,
+    DecisionSignalRecord,
+)
 from src.analyzer import AnalysisResult
 from src.daily_market_context_guardrail import apply_daily_market_context_guardrail
 from src.services.history_service import HistoryService
@@ -1536,6 +1543,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
     def test_delete_analysis_history_records_also_cleans_backtests_and_decision_signals(self) -> None:
         """删除历史记录时应一并清理关联回测结果和决策信号。"""
         record_id = self._save_history("query_delete_001")
+        linked_signal_id = None
 
         with self.db.session_scope() as session:
             session.add(BacktestResult(
@@ -1546,7 +1554,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 engine_version="v1",
                 eval_status="pending",
             ))
-            session.add(DecisionSignalRecord(
+            linked_signal = DecisionSignalRecord(
                 stock_code="600519",
                 stock_name="贵州茅台",
                 market="cn",
@@ -1560,6 +1568,26 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 reason="linked",
                 plan_quality="minimal",
                 status="active",
+            )
+            session.add(linked_signal)
+            session.flush()
+            linked_signal_id = linked_signal.id
+            session.add(DecisionSignalOutcomeRecord(
+                signal_id=linked_signal_id,
+                horizon="3d",
+                engine_version="decision-signal-v1",
+                eval_status="completed",
+                outcome="hit",
+                action="buy",
+                market="cn",
+                source_type="analysis",
+                plan_quality="minimal",
+                holding_state="holding",
+            ))
+            session.add(DecisionSignalFeedbackRecord(
+                signal_id=linked_signal_id,
+                feedback_value="useful",
+                source="api",
             ))
             session.add(DecisionSignalRecord(
                 stock_code="000001",
@@ -1588,6 +1616,18 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             )
             self.assertEqual(
                 session.query(DecisionSignalRecord).filter(DecisionSignalRecord.source_report_id == record_id).count(),
+                0,
+            )
+            self.assertEqual(
+                session.query(DecisionSignalOutcomeRecord).filter(
+                    DecisionSignalOutcomeRecord.signal_id == linked_signal_id
+                ).count(),
+                0,
+            )
+            self.assertEqual(
+                session.query(DecisionSignalFeedbackRecord).filter(
+                    DecisionSignalFeedbackRecord.signal_id == linked_signal_id
+                ).count(),
                 0,
             )
             self.assertEqual(

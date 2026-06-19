@@ -58,7 +58,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
-    def test_get_config_returns_raw_sensitive_values(self) -> None:
+    def test_get_config_keeps_regular_sensitive_values_unmasked(self) -> None:
         payload = self.service.get_config(include_schema=True)
         items = {item["key"]: item for item in payload["items"]}
 
@@ -79,6 +79,22 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(items["ALPHASIFT_INSTALL_SPEC"]["value"], payload["mask_token"])
         self.assertTrue(items["ALPHASIFT_INSTALL_SPEC"]["is_masked"])
         self.assertTrue(items["ALPHASIFT_INSTALL_SPEC"]["schema"]["is_sensitive"])
+
+    def test_get_config_masks_llm_usage_hmac_secret(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "LLM_USAGE_HMAC_SECRET=telemetry-secret",
+            "LLM_USAGE_HMAC_KEY_VERSION=test-v1",
+        )
+
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(items["LLM_USAGE_HMAC_SECRET"]["value"], payload["mask_token"])
+        self.assertTrue(items["LLM_USAGE_HMAC_SECRET"]["is_masked"])
+        self.assertTrue(items["LLM_USAGE_HMAC_SECRET"]["schema"]["is_sensitive"])
+        self.assertEqual(items["LLM_USAGE_HMAC_KEY_VERSION"]["value"], "test-v1")
+        self.assertFalse(items["LLM_USAGE_HMAC_KEY_VERSION"]["is_masked"])
 
     def test_get_config_uses_switch_default_for_missing_report_model_toggle(self) -> None:
         payload = self.service.get_config(include_schema=True)
@@ -732,7 +748,9 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             "LLM_OPENAI_MODELS=openai/gpt-4o-mini,openai/gpt-4o",
             "LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,openai/gpt-4o",
             "ALPHASIFT_ENABLED=false",
-            "ALPHASIFT_INSTALL_SPEC=git+https://github.com/ZhuLinsen/alphasift.git@14e74fc0819267f7c04c3117a0dd0fe3f9b19404",
+            "ALPHASIFT_INSTALL_SPEC=git+https://github.com/ZhuLinsen/alphasift.git@377049857cc04175dc3cca62121ee41adec6cdb8",
+            "LLM_USAGE_HMAC_SECRET=telemetry-secret",
+            "LLM_USAGE_HMAC_KEY_VERSION=test-v1",
             "GEMINI_API_KEY=legacy-secret",
         )
 
@@ -741,6 +759,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             items=[
                 {"key": "ALPHASIFT_ENABLED", "value": "true"},
                 {"key": "ALPHASIFT_INSTALL_SPEC", "value": "******"},
+                {"key": "LLM_USAGE_HMAC_SECRET", "value": "******"},
                 {"key": "GEMINI_API_KEY", "value": "******"},
             ],
             mask_token="******",
@@ -750,14 +769,16 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(response["success"])
         self.assertEqual(response["applied_count"], 1)
         self.assertIn("ALPHASIFT_ENABLED", response["updated_keys"])
-        self.assertEqual(response["skipped_masked_count"], 2)
+        self.assertEqual(response["skipped_masked_count"], 3)
 
         current_map = self.manager.read_config_map()
         self.assertEqual(current_map["ALPHASIFT_ENABLED"], "true")
         self.assertEqual(
             current_map["ALPHASIFT_INSTALL_SPEC"],
-            "git+https://github.com/ZhuLinsen/alphasift.git@14e74fc0819267f7c04c3117a0dd0fe3f9b19404",
+            "git+https://github.com/ZhuLinsen/alphasift.git@377049857cc04175dc3cca62121ee41adec6cdb8",
         )
+        self.assertEqual(current_map["LLM_USAGE_HMAC_SECRET"], "telemetry-secret")
+        self.assertEqual(current_map["LLM_USAGE_HMAC_KEY_VERSION"], "test-v1")
         self.assertEqual(current_map["GEMINI_API_KEY"], "legacy-secret")
         self.assertEqual(current_map["LITELLM_MODEL"], "openai/gpt-4o-mini")
         self.assertEqual(current_map["AGENT_LITELLM_MODEL"], "openai/gpt-4o")

@@ -40,7 +40,7 @@ from src.llm import generation_params as llm_generation_params
 logger = logging.getLogger(__name__)
 
 DEFAULT_ALPHASIFT_INSTALL_SPEC = (
-    "git+https://github.com/ZhuLinsen/alphasift.git@14e74fc0819267f7c04c3117a0dd0fe3f9b19404"
+    "git+https://github.com/ZhuLinsen/alphasift.git@377049857cc04175dc3cca62121ee41adec6cdb8"
 )
 
 
@@ -717,6 +717,10 @@ class Config:
     # === 新闻与分析筛选配置 ===
     news_max_age_days: int = 3   # 新闻最大时效（天）
     news_strategy_profile: str = "short"  # 新闻窗口策略档位：ultra_short/short/medium/long
+    news_intel_retention_days: int = 30  # 本地资讯池保留天数
+    news_intel_fetch_timeout_sec: float = 8.0  # 单个资讯源拉取超时
+    news_intel_max_items_per_source: int = 50  # 单次每个资讯源最多采集条数
+    newsnow_base_url: str = "https://newsnow.busiyi.world"  # NewsNow HTTP API base URL (数据源侧，不影响 LLM/provider base URL)
     bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
 
     # === Agent 模式配置 ===
@@ -1486,6 +1490,28 @@ class Config:
             news_strategy_profile=cls._parse_news_strategy_profile(
                 os.getenv('NEWS_STRATEGY_PROFILE', 'short')
             ),
+            news_intel_retention_days=parse_env_int(
+                os.getenv('NEWS_INTEL_RETENTION_DAYS'),
+                30,
+                field_name='NEWS_INTEL_RETENTION_DAYS',
+                minimum=1,
+                maximum=365,
+            ),
+            news_intel_fetch_timeout_sec=parse_env_float(
+                os.getenv('NEWS_INTEL_FETCH_TIMEOUT_SEC'),
+                8.0,
+                field_name='NEWS_INTEL_FETCH_TIMEOUT_SEC',
+                minimum=1.0,
+                maximum=30.0,
+            ),
+            news_intel_max_items_per_source=parse_env_int(
+                os.getenv('NEWS_INTEL_MAX_ITEMS_PER_SOURCE'),
+                50,
+                field_name='NEWS_INTEL_MAX_ITEMS_PER_SOURCE',
+                minimum=1,
+                maximum=200,
+            ),
+            newsnow_base_url=((os.getenv('NEWSNOW_BASE_URL') or '').strip().rstrip('/') or 'https://newsnow.busiyi.world'),
             bias_threshold=parse_env_float(os.getenv('BIAS_THRESHOLD'), 5.0, field_name='BIAS_THRESHOLD', minimum=1.0),
             agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
             _agent_mode_explicit=os.getenv('AGENT_MODE') is not None,

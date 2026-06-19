@@ -27,7 +27,12 @@ _SUFFIX_DIGIT_LENS: dict = {
     ".SS": (6,),
     ".BJ": (6,),
     ".HK": (1, 2, 3, 4, 5),
+    ".T": (4, 5),
+    ".KS": (6,),
+    ".KQ": (6,),
 }
+
+_PRESERVE_SUFFIXES = {".T", ".KS", ".KQ"}
 
 
 def _valid_exchange_code(exchange: str, base: str, digit_lens: tuple[int, ...]) -> bool:
@@ -90,6 +95,8 @@ def normalize_code(raw: str) -> Optional[str]:
         return None
     if text.isdigit() and len(text) in (5, 6):
         return text
+    if any(text.endswith(suffix) for suffix in _PRESERVE_SUFFIXES):
+        return text if _strip_exchange_suffix(text) is not None else None
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
         return text
     stripped_suffix = _strip_exchange_suffix(text)

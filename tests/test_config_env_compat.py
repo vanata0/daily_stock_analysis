@@ -78,6 +78,44 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
         self.assertEqual(config.alphasift_install_spec, DEFAULT_ALPHASIFT_INSTALL_SPEC)
 
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_news_intel_envs_do_not_change_llm_runtime_contract(
+        self,
+        _mock_parse_litellm_yaml,
+        _mock_setup_env,
+    ) -> None:
+        base_env = {
+            "STOCK_LIST": "600519",
+            "OPENAI_API_KEYS": "base-key-12345",
+            "OPENAI_BASE_URL": "https://openai.example.com/v1",
+            "LITELLM_MODEL": "openai/gpt-4.1",
+            "OPENAI_MODEL": "gpt-4.1",
+        }
+        with patch.dict(os.environ, base_env, clear=True):
+            Config._instance = None
+            baseline = Config._load_from_env()
+
+        news_intel_env = dict(base_env)
+        news_intel_env.update({
+            "NEWS_INTEL_RETENTION_DAYS": "45",
+            "NEWS_INTEL_FETCH_TIMEOUT_SEC": "5.5",
+            "NEWS_INTEL_MAX_ITEMS_PER_SOURCE": "25",
+            "NEWSNOW_BASE_URL": "https://newsnow.example.com/",
+        })
+        with patch.dict(os.environ, news_intel_env, clear=True):
+            Config._instance = None
+            with_news_intel = Config._load_from_env()
+
+        self.assertEqual(with_news_intel.litellm_model, baseline.litellm_model)
+        self.assertEqual(with_news_intel.litellm_fallback_models, baseline.litellm_fallback_models)
+        self.assertEqual(with_news_intel.openai_api_key, baseline.openai_api_key)
+        self.assertEqual(with_news_intel.openai_base_url, baseline.openai_base_url)
+        self.assertEqual(with_news_intel.news_intel_fetch_timeout_sec, 5.5)
+        self.assertEqual(with_news_intel.news_intel_max_items_per_source, 25)
+        self.assertEqual(with_news_intel.news_intel_retention_days, 45)
+        self.assertEqual(with_news_intel.newsnow_base_url, "https://newsnow.example.com")
+
     def test_env_example_alphasift_install_spec_matches_trusted_default(self):
         env_example = Path(__file__).resolve().parents[1] / ".env.example"
 
@@ -235,6 +273,38 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
                 config = Config._load_from_env()
 
         self.assertEqual(config.schedule_time, "18:00")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_news_intel_env_vars_do_not_affect_llm_layer(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "LITELLM_MODEL": "openai/gpt-5.5",
+                "OPENAI_MODEL": "gpt-5.5",
+                "OPENAI_API_KEY": "sk-openai-test",
+                "OPENAI_BASE_URL": "https://openai.example/v1",
+                "NEWS_INTEL_RETENTION_DAYS": "14",
+                "NEWS_INTEL_FETCH_TIMEOUT_SEC": "12",
+                "NEWS_INTEL_MAX_ITEMS_PER_SOURCE": "75",
+                "NEWSNOW_BASE_URL": "https://newsnow.example.com/base/",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "openai/gpt-5.5")
+        self.assertEqual(config.openai_model, "gpt-5.5")
+        self.assertEqual(config.openai_base_url, "https://openai.example/v1")
+        self.assertEqual(config.news_intel_retention_days, 14)
+        self.assertEqual(config.news_intel_fetch_timeout_sec, 12.0)
+        self.assertEqual(config.news_intel_max_items_per_source, 75)
+        self.assertEqual(config.newsnow_base_url, "https://newsnow.example.com/base")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

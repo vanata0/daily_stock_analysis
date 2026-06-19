@@ -25,7 +25,7 @@ import pandas as pd
 from src.config import FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT, get_config, Config
 from src.storage import get_db
 from data_provider import DataFetcherManager
-from data_provider.base import normalize_stock_code
+from data_provider.base import is_bse_code, normalize_stock_code
 from data_provider.realtime_types import ChipDistribution
 from src.analyzer import (
     GeminiAnalyzer,
@@ -55,6 +55,7 @@ from src.services.daily_market_context import (
     format_daily_market_context_prompt_section,
 )
 from src.services.social_sentiment_service import SocialSentimentService
+from src.services.intelligence_service import IntelligenceService
 from src.services.analysis_context_builder import (
     AnalysisContextBuilder,
     PipelineAnalysisArtifacts,
@@ -71,6 +72,7 @@ from src.services.run_diagnostics import (
     sanitize_diagnostic_text,
 )
 from src.services.decision_signal_extractor import extract_and_persist_from_analysis_result
+from src.services.decision_signal_summary import summarize_decision_signal
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import (
@@ -91,6 +93,70 @@ logger = logging.getLogger(__name__)
 _SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD = threading.Lock()
 _DAILY_MARKET_CONTEXT_SERVICE_LOCK_INIT_GUARD = threading.Lock()
 
+
+def _symbol_scope_lookup_values(code: str, market: str) -> List[str]:
+    """Return accepted persisted-intelligence symbol spellings for lookup."""
+    raw = str(code or "").strip()
+    normalized = normalize_stock_code(raw) if raw else ""
+    values: List[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            values.append(text)
+
+    def add_case_variants(value: str) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        add(text)
+        add(text.upper())
+        add(text.lower())
+
+    add_case_variants(normalized)
+    add_case_variants(raw)
+
+    normalized_upper = normalized.upper()
+    if normalized_upper.startswith("HK") and normalized_upper[2:].isdigit():
+        digits = normalized_upper[2:]
+        trimmed_digits = digits.lstrip("0") or digits
+        add_case_variants(normalized_upper)
+        add_case_variants(digits)
+        add_case_variants(trimmed_digits)
+        add_case_variants(f"HK{trimmed_digits}")
+        add_case_variants(f"{trimmed_digits}.HK")
+        add_case_variants(f"{digits}.HK")
+        return values
+
+    if (market or "").strip().lower() != "cn":
+        return values
+    if not (normalized.isdigit() and len(normalized) == 6):
+        return values
+
+    raw_upper = raw.upper()
+    exchange = ""
+    if raw_upper.startswith(("SH", "SS")) or raw_upper.endswith((".SH", ".SS")):
+        exchange = "SH"
+    elif raw_upper.startswith("SZ") or raw_upper.endswith(".SZ"):
+        exchange = "SZ"
+    elif raw_upper.startswith("BJ") or raw_upper.endswith(".BJ"):
+        exchange = "BJ"
+    elif is_bse_code(normalized):
+        exchange = "BJ"
+    elif normalized.startswith(("5", "6", "9")):
+        exchange = "SH"
+    else:
+        exchange = "SZ"
+
+    add_case_variants(f"{exchange}{normalized}")
+    add_case_variants(f"{exchange}.{normalized}")
+    add_case_variants(f"{normalized}.{exchange}")
+    if exchange == "SH":
+        add_case_variants(f"SS.{normalized}")
+        add_case_variants(f"{normalized}.SS")
+    return values
 
 
 class StockAnalysisPipeline:
@@ -479,6 +545,11 @@ class StockAnalysisPipeline:
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
+            persisted_intelligence_context = self._load_persisted_intelligence_context(
+                code=code,
+                stock_name=stock_name,
+                market=market or "cn",
+            )
             news_result_count: Optional[int] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
             if self.search_service is not None and self.search_service.is_available:
@@ -597,6 +668,12 @@ class StockAnalysisPipeline:
                     _research_ctx = self.fetcher_manager.get_research_report_context(code)
                 except Exception as _exc:
                     logger.warning("%s(%s) 研报获取失败: %s", stock_name, code, _exc)
+            if persisted_intelligence_context:
+                news_context = (
+                    f"{news_context}\n\n{persisted_intelligence_context}"
+                    if news_context
+                    else persisted_intelligence_context
+                )
 
             # Step 5: 获取分析上下文（技术面数据）
             self._emit_progress(58, f"{stock_name}：正在整理分析上下文")
@@ -810,6 +887,7 @@ class StockAnalysisPipeline:
                             source_report_id=saved_history_id,
                             report_type=report_type.value,
                             context_snapshot=context_snapshot,
+                            portfolio_context=portfolio_context,
                         )
                 except Exception as e:
                     record_history_run(
@@ -1263,6 +1341,19 @@ class StockAnalysisPipeline:
                             )
                 except Exception as _exc:
                     logger.warning("[%s] Agent mode: eastmoney news fetch failed: %s", code, _exc)
+            persisted_intelligence_context = self._load_persisted_intelligence_context(
+                code=code,
+                stock_name=stock_name,
+                market=get_market_for_stock(normalize_stock_code(code)) or "cn",
+            )
+            if persisted_intelligence_context:
+                existing = initial_context.get("news_context")
+                initial_context["news_context"] = (
+                    f"{existing}\n\n{persisted_intelligence_context}"
+                    if existing
+                    else persisted_intelligence_context
+                )
+                logger.info(f"[{code}] Agent mode: local intelligence evidence injected into news_context")
 
             # Issue #1066: ensure deep history is in DB before agent tools run
             self._ensure_agent_history(code)
@@ -1467,6 +1558,7 @@ class StockAnalysisPipeline:
                             source_report_id=saved_history_id,
                             report_type=report_type.value,
                             context_snapshot=agent_context_snapshot,
+                            portfolio_context=portfolio_context,
                         )
                     latest_diagnostic_snapshot = current_diagnostic_snapshot()
                     if latest_diagnostic_snapshot is not None:
@@ -2257,6 +2349,7 @@ class StockAnalysisPipeline:
         source_report_id: int,
         report_type: str,
         context_snapshot: Dict[str, Any],
+        portfolio_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Best-effort DecisionSignal extraction after analysis history is saved."""
 
@@ -2273,14 +2366,19 @@ class StockAnalysisPipeline:
                 or getattr(self, "trace_id", None)
                 or query_id
             )
-            extract_and_persist_from_analysis_result(
+            signal_result = extract_and_persist_from_analysis_result(
                 result,
                 context_snapshot=context_snapshot,
                 source_report_id=source_report_id,
                 trace_id=str(trace_id),
                 query_source=getattr(self, "query_source", None) or "system",
                 report_type=report_type,
+                portfolio_context=portfolio_context,
             )
+            if isinstance(signal_result, dict):
+                summary = summarize_decision_signal(signal_result.get("item"))
+                if summary:
+                    setattr(result, "decision_signal_summary", summary)
         except Exception as exc:
             logger.warning(
                 "Decision signal extraction skipped after history save: query_id=%s stock_code=%s error=%s",
@@ -2365,6 +2463,58 @@ class StockAnalysisPipeline:
                 )
             except Exception as exc:
                 logger.warning("回写通知诊断快照失败（fail-open）: %s", exc)
+
+    def _load_persisted_intelligence_context(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        market: str,
+        limit: int = 6,
+    ) -> Optional[str]:
+        """Load locally persisted intelligence as fail-open evidence context."""
+        try:
+            service = IntelligenceService()
+            days = max(1, int(self.config.get_effective_news_window_days() or 1))
+            collected: list[Dict[str, Any]] = []
+            seen_urls: set[str] = set()
+            symbol_filters = [
+                {"scope_type": "symbol", "scope_value": scope_value, "market": market}
+                for scope_value in _symbol_scope_lookup_values(code, market)
+            ]
+            for filters in symbol_filters + [{"scope_type": "market", "market": market}]:
+                payload = service.list_items(published_days=days, page=1, page_size=limit, **filters)
+                for item in payload.get("items", []):
+                    if not isinstance(item, dict):
+                        continue
+                    url = str(item.get("url") or "")
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    collected.append(item)
+                    if len(collected) >= limit:
+                        break
+                if len(collected) >= limit:
+                    break
+            if not collected:
+                return None
+            lines = [f"## 本地资讯证据池（{stock_name}/{code}）"]
+            for idx, item in enumerate(collected[:limit], 1):
+                title = str(item.get("title") or "未命名资讯").strip()
+                summary = str(item.get("summary") or "").strip()
+                source = str(item.get("source") or item.get("source_name") or "local-intel").strip()
+                published = str(item.get("published_at") or "").strip()
+                url = str(item.get("url") or "").strip()
+                meta = " / ".join(part for part in (source, published) if part)
+                lines.append(f"{idx}. {title}" + (f"（{meta}）" if meta else ""))
+                if summary:
+                    lines.append(f"   摘要：{summary[:220]}")
+                if url and not url.startswith("no-url:intel:"):
+                    lines.append(f"   来源：{url}")
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.debug("读取本地资讯证据失败（fail-open）: %s", exc)
+            return None
 
     def _build_legacy_analysis_artifacts(
         self,

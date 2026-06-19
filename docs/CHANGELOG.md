@@ -99,6 +99,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 美股中文场景下，市场标签与策略蓝图（`Strategy Blueprint/Strategy Framework`）已本地化为中文显示，避免 `report_language=zh` 下混入英文策略段落与市场标签；与 Issue #1555 的历史/即时结果一致。
 - [修复] Docker Web 设置页读取配置时在活跃 `.env` 文件缺项时回退展示启动注入的同名环境变量，并补清 `env_file` / `--env-file`、`ENV_FILE=/app/data/runtime.env` 与单文件 `.env` 挂载边界文档。
 - [文档] 补充说明：LLM / LiteLLM 兼容键的回退仅用于 Settings 界面展示与校验上下文拼装，不改写、不迁移、不清理用户现有的 provider/model/base URL 持久化配置；未发生 provider / model / base URL 语义迁移，仅保留同名启动注入的展示级兜底。兼容边界依据 `requirements.txt`（`litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`、`openai>=1.0.0`）；官方语义来源：[LiteLLM OpenAI-compatible](https://docs.litellm.ai/docs/providers/openai_compatible)、[OpenAI Chat Completion API](https://platform.openai.com/docs/api-reference/chat/create)。回退/恢复路径为：重启/更新后清理同名 `env_file` / `--env-file` / `environment` 覆盖后使用持久化保存值，或通过桌面端导入/导出 `.env` 片段恢复；仅在 WebUI 未改写同名启动注入值时才会按该片段接管。验证回归点见 `tests/test_system_config_service.py::test_get_config_uses_runtime_env_as_display_fallback`、`tests/test_system_config_service.py::test_get_config_runtime_env_fallback_does_not_persist_llm_fields_on_save`、`tests/test_system_config_service.py::test_runtime_env_fallback_does_not_override_saved_provider_and_base_url_settings`、以及 `tests/test_system_config_api.py` 的 `/api/v1/system/config` 获取/保存链路回归。
+- [新功能] #1390 P6 将 DecisionSignal 复用到告警、通知和组合风险：告警触发关联 latest active 信号或创建最小 alert 信号，通知追加低敏信号摘要，持仓风险聚合 active sell/reduce/alert 信号并保持 fail-open。
+- [修复] #1722 修复 #1390 P6 DecisionSignal 在组合风险快照语义和默认聚合通知展示中的遗漏。
+- [新功能] #1707 资讯源新增 `newsnow` 类型、`NEWSNOW_BASE_URL` 配置和 `/api/v1/intelligence/sources/defaults` 默认源初始化接口，内置财联社热门、雪球热门股票、华尔街见闻快讯、金十数据和格隆汇事件等财经热点源，可直接拉取落库并进入既有分析证据链路；官方 NewsNow 部署指南见 https://github.com/qqhann/newsnow，生产环境建议自建实例而非使用公开示例。
+
 - [修复] AlphaSift 热点题材刷新在 EastMoney 瞬断且无缓存时返回友好空态，并让桌面更新保留 AlphaSift 热点缓存。
 - [修复] 问股从历史报告进入后的追问会持续携带当前标的，切回或重载已有会话时可从历史消息恢复基础当前标的，并由后端阻断未明确切换时的错误股票工具调用、交易所片段和指标缩写误路由。
 - [修复] 自选股加入和删除按等价股票代码匹配港股及大小写美股变体，避免 `00700`、`HK00700`、`00700.HK` 或 `aapl`、`AAPL` 被误判为不同标的。
@@ -106,8 +110,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] #1390 P1 新增独立 `DecisionSignal` 存储、Repository、Service 与 `/api/v1/decision-signals` API，支持按来源类型/市场/股票/动作/期限/阶段去重、按 `source_report_id` / `trace_id` 查询、同源过期信号续期且保留来源身份字段、禁止 expired 直接 PATCH 复活、价格计划校验、状态更新、懒过期、cache-only 持仓过滤、敏感信息脱敏、敏感 `trace_id` 拒绝和仅清理 `source_type=analysis` 历史绑定信号的历史删除联动。
 - [改进] #1390 P1 补充 Web decision-signals typed API wrapper 与契约隔离测试，暂不接入 UI。
 - [改进] #1390 P3 为 `DecisionSignal` 补齐默认生命周期、同源窄 relaxed 去重、相反 active 信号自动 invalidated、terminal 状态不可 PATCH 复活和自动提取低敏 market phase hints，保持 API 响应 schema 不变。
+- [新功能] #1390 P4 新增 Web AI 建议页、持仓页最新 active 信号摘要和历史报告提取信号展示，复用既有 DecisionSignal API 且不新增后端契约或配置项。
+- [修复] #1390 P4 修复 Web AI 建议页筛选/状态更新分页、价格计划单边入场价展示、持仓 latest 信号刷新、详情 JSON 安全渲染和卡片交互语义问题。
+- [修复] #1390 P4 为历史报告 AI 建议查询补充精确报告懒提取，旧分析记录在首次查看报告信号时可生成并展示 DecisionSignal，避免明确个股建议长期显示为空态。
+- [修复] #1390 P4 仅允许在历史报告中存在明确 `action` 或可由 `operation_advice` 解析出的动作时才触发决策信号懒回填；避免 `decision_type=hold` 等统计口径在建议不明确场景误回填，并补充 GET /decision-signals 在精确 report 查询的写入副作用说明。
+- [新功能] #1390 P5 新增 DecisionSignal 用户反馈、信号级日线后验评估、统计 API 与 Web 展示，使用 outcome/feedback sidecar 表并保留主信号表契约；默认后验重跑会恢复可补齐行情数据的 unable 结果，批量 backfill 不再被最新已评估信号占满 limit。
 - [修复] #1390 收紧建议动作 legacy fallback：英文 `not to ...` 与 `avoid selling/reducing/trimming ...` 等否定/回避表达不再误判为买卖动作，Web 旧记录不再把中文金融上下文、`buy or sell`、多 guard 歧义文本或 `buyback` / `buy-back` / `buy back` / `selloff` / `sell-off` / `sell off` 等英文复合词渲染成 action badge，并在有结构化 `action` 时让回测/历史趋势等入口按界面语言显示 action 标签。
 - [改进] 完善运行时日志上下文，补充 logger name、触发来源、市场统计与实时行情预取链路状态，便于排查调度、API、Bot 和数据源降级路径。
+- [改进] #1595 P0a 新增 legacy LLM usage provider/cache telemetry 与 message HMAC 诊断字段，保持 prompt、provider 请求参数、fallback 与用量 summary API 行为不变。
+- [改进] #1595 P0.5a 为普通个股分析 legacy `[system, user]` message 新增内部稳定性审计字段，记录低敏路由上下文、skill 配置 HMAC、动态 marker 位置和 common-prefix 粗估，不改变 prompt、provider 参数或公开 Usage API。
 - [新功能] 新增分析任务与历史报告运行流快照 API，提供 lanes、nodes、edges、events、summary 等统一契约，并从任务队列、运行诊断和 AnalysisContextPack overview 构建脱敏数据流/信息流。
 - [新功能] Web 端为活跃任务、历史报告和大盘复盘报告补充运行流视图入口，支持查看运行摘要、拓扑节点、事件流和基础排障详情。
 - [修复] 修复历史报告运行流快照在混合时区事件时间戳下返回 500 的问题。
@@ -122,10 +133,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [修复] 发布说明生成查询 PR 作者失败时保留降级并输出包含 PR 编号和异常类型的 warning，便于排查 token、权限、网络或 GitHub API 异常。
-- [改进] DSA 数据源链路新增 Tencent 日 K 直连 fetcher、daily source health 短期熔断，并升级 AlphaSift 默认 pin/runtime bridge，默认启用 `DAILY_SOURCE=auto`、Sina snapshot 优先级和候选级 quote context。
+- [改进] DSA 数据源链路新增 Tencent 日 K 直连 fetcher、daily source health 短期熔断，并升级 AlphaSift 默认 pin/runtime bridge，默认启用 `DAILY_SOURCE=auto`、Sina snapshot 优先级、候选级 quote context 与 LLM ranking timeout/max tokens 边界。
 - [文档] 补充 AlphaSift 迁移与回退边界：明确 `ALPHASIFT_INSTALL_SPEC` 显式覆盖语义、`requirements.txt + DEFAULT_ALPHASIFT_INSTALL_SPEC` 与运行时兼容边界、以及回滚路径（关闭功能/完整 revert）说明，覆盖旧 pin 用户升级行为。
+- [新功能] #1707 新增合规 RSS/Atom 资讯源配置、拉取、去重、入库、查询、retention 与基础安全校验 API，作为个股/市场资讯情报池基线。
+- [改进] #1707 个股分析、Agent 分析和大盘复盘会 fail-open 读取本地资讯/情报池，并把来源链接作为新闻上下文和 evidence 输入。
+- [改进] #1707 补齐内置 RSS/Atom 资讯源模板后端入口，修复本地资讯拉取的 requests 参数兼容、请求阶段 DNS 校验、共享地址段拒绝、坏条目跳过与港股短代码匹配。
+- [文档] #1707 阐明情报池接入仅追加本地资讯消费，不改模型名/provider/base URL/默认模型策略/回退策略/保存前清理逻辑或运行时配置迁移；结构化风险提示若出现为关键词误报；回滚可采用 `revert` 本 PR 或停用/移除本地资讯接入入口与数据。
+- [文档] 本次 #1707 情报源基线仅新增 `NEWS_INTEL_*` 配置，不变更 LITELLM / ANSPIRE / Base URL / provider/model 清理与回退语义；回退策略为移除或禁用这三项情报源变量后恢复既有 LLM 配置行为。
+- [修复] #1707 默认禁用 `/api/v1/intelligence/sources/defaults` 新建源（未传 `enabled`），避免公开示例 NewsNow 实例被默认启用，同时统一 500 响应细节仅入日志、响应返回通用错误信息。
+- [新功能] #1718 新增日本/韩国 suffix-only 个股分析 MVP：手输 `.T` / `.KS` / `.KQ` 代码可走 YFinance 日线与近实时行情，补充市场识别、交易日历、Prompt 语义、Web/API 类型和能力边界文档。
+- [文档] #1718 明确本次为 JP/KR suffix 仅路由兼容改造，不涉及 provider/model/base URL/运行时配置清理与保存前清理策略，不新增或变更 ANSPIRE/模型相关运行态配置项；回退方式为 revert 本次改动或移除 jp/kr 入口恢复既有行为。
 
 - [新功能] 个股分析历史成功保存后会从最终报告 best-effort 提取 `DecisionSignal` 决策信号，复用现有信号去重、计划质量计算和脱敏契约。
+- [修复] AlphaSift 热点详情兼容 `leader_stocks` 与 `stocks` 双字段，避免旧合约或缓存只提供其中一个字段时概念股详情报缺失字段。
+- [改进] 问股页移动端策略选择改为默认收起的按钮入口，展开后仍可多选策略并在发送后自动收起，减少对对话内容的遮挡。
+- [修复] #1718 Web 股票输入与自动补全补齐日韩 Yahoo 后缀代码校验和常用日韩股票索引，手输或搜索 `7203.T`、`005930.KS`、`035720.KQ` 可正常提交分析。
+
 
 ## [3.22.0] - 2026-06-13
 

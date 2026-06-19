@@ -157,6 +157,29 @@ class TestAlphaSiftFieldsRegistered(unittest.TestCase):
         self.assertEqual(field["ui_control"], "password")
 
 
+class TestLLMUsageHMACFieldsRegistered(unittest.TestCase):
+    def test_secret_is_sensitive_password_field(self):
+        field = get_field_definition("LLM_USAGE_HMAC_SECRET")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertTrue(field["is_sensitive"])
+        self.assertEqual(field["ui_control"], "password")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_USAGE_HMAC_SECRET")
+        self.assertIn("high-entropy", field["description"])
+        self.assertIn("version control", field["description"])
+        self.assertIn("openssl rand -hex 32", field["examples"][0])
+        self.assertIn("secret_value", field.get("warning_codes", []))
+
+    def test_key_version_is_visible_non_sensitive_field(self):
+        field = get_field_definition("LLM_USAGE_HMAC_KEY_VERSION")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertFalse(field["is_sensitive"])
+        self.assertEqual(field["ui_control"], "text")
+        self.assertEqual(field["default_value"], "local-v1")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_USAGE_HMAC_KEY_VERSION")
+
+
 class TestSettingsHelpMetadata(unittest.TestCase):
     """Field help metadata should be available for covered settings help slices."""
 

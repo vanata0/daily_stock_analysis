@@ -108,6 +108,25 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响分析文本、报告语气和结构化输出稳定性。'],
     notes: ['不同 provider 对 temperature 的实际支持范围可能不同。'],
   },
+  'settings.ai_model.LLM_USAGE_HMAC_SECRET': {
+    title: 'LLM 用量 HMAC 密钥',
+    summary: '用于 LLM usage telemetry 的 message-level HMAC 指纹。',
+    usage: '通常留空即可，系统会在数据目录生成本地密钥文件；只有需要跨部署比较 HMAC 时才手动配置同一个高熵随机密钥，例如 openssl rand -hex 32。',
+    valueNotes: [
+      '该密钥不会发送给 provider，也不会改变 prompt、模型参数或报告内容。',
+      '修改后新旧 HMAC 不再可比较，应同步更新 LLM_USAGE_HMAC_KEY_VERSION。',
+    ],
+    impact: ['影响 llm_usage 表中 messages_hmac、system_message_hmac 和 user_message_hmac 的可比性。'],
+    notes: ['不要使用登录 session secret，也不要把真实密钥提交到版本控制、issue、日志或截图里。'],
+  },
+  'settings.ai_model.LLM_USAGE_HMAC_KEY_VERSION': {
+    title: 'LLM 用量 HMAC 版本',
+    summary: '标记当前 LLM usage HMAC 密钥版本。',
+    usage: '轮换 LLM_USAGE_HMAC_SECRET 时同步更新，例如 prod-2026-06。',
+    valueNotes: ['留空时使用 local-v1。'],
+    impact: ['帮助区分不同密钥生成的 HMAC，避免错误比较不同部署或不同版本的指纹。'],
+    notes: ['该字段只是版本标签，不是密钥。'],
+  },
   'settings.ai_model.provider_keys': {
     title: '模型服务 API Key',
     summary: '配置模型服务商或聚合网关的访问密钥。',
@@ -1120,6 +1139,25 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Use low values for stable structured output.', '0.7 is the general default.'],
     impact: ['Affects report wording and structured-output stability.'],
     notes: ['Provider-specific limits can differ.'],
+  },
+  'settings.ai_model.LLM_USAGE_HMAC_SECRET': {
+    title: 'LLM Usage HMAC Secret',
+    summary: 'Signs message-level HMAC fingerprints for LLM usage telemetry.',
+    usage: 'Usually leave this empty so the backend creates a local secret file. Set it only when deployments intentionally need comparable HMACs, and use a high-entropy random value such as openssl rand -hex 32.',
+    valueNotes: [
+      'This secret is not sent to providers and does not change prompts, model parameters, or reports.',
+      'When rotating it, also update LLM_USAGE_HMAC_KEY_VERSION.',
+    ],
+    impact: ['Affects comparability of messages_hmac, system_message_hmac, and user_message_hmac in llm_usage.'],
+    notes: ['Do not reuse the login session secret or commit/expose the real value in version control, issues, logs, or screenshots.'],
+  },
+  'settings.ai_model.LLM_USAGE_HMAC_KEY_VERSION': {
+    title: 'LLM Usage HMAC Key Version',
+    summary: 'Labels the current LLM usage HMAC key version.',
+    usage: 'Update it when rotating LLM_USAGE_HMAC_SECRET, for example prod-2026-06.',
+    valueNotes: ['Defaults to local-v1 when unset.'],
+    impact: ['Prevents accidental comparison across different HMAC keys or deployments.'],
+    notes: ['This is only a version label, not a secret.'],
   },
   'settings.ai_model.provider_keys': {
     title: 'Provider API Key',

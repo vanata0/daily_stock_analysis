@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Security
 from fastapi.security import APIKeyCookie
@@ -12,9 +12,15 @@ from fastapi.security import APIKeyCookie
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.decision_signals import (
     DecisionSignalCreateRequest,
+    DecisionSignalFeedbackItem,
+    DecisionSignalFeedbackRequest,
     DecisionSignalItem,
     DecisionSignalListResponse,
     DecisionSignalMutationResponse,
+    DecisionSignalOutcomeListResponse,
+    DecisionSignalOutcomeRunRequest,
+    DecisionSignalOutcomeRunResponse,
+    DecisionSignalOutcomeStatsResponse,
     DecisionSignalStatusUpdateRequest,
 )
 from src.auth import COOKIE_NAME
@@ -23,6 +29,7 @@ from src.services.decision_signal_service import (
     DecisionSignalService,
     DecisionSignalStorageError,
 )
+from src.services.decision_signal_outcome_service import DecisionSignalOutcomeService
 
 
 logger = logging.getLogger(__name__)
@@ -108,6 +115,9 @@ def create_signal(request: DecisionSignalCreateRequest) -> DecisionSignalMutatio
     summary="查询决策信号列表",
     description=(
         "分页查询 DecisionSignal；读取前会懒过期已到 expires_at 的 active 信号。"
+        "当 source_type=analysis 且只传 source_report_id 查询时，若无命中信号会尝试基于该历史报告一次性懒回填 "
+        "（仅首次命中列表场景，且该精确查询会触发历史决策信号回填写入，属于 read-with-write 行为；"
+        "不影响其他分页列表筛选参数场景）。"
         "holding_only=true 只读取 active 账户的 portfolio_positions 缓存持仓，不触发 portfolio snapshot replay。"
     ),
     operation_id="listDecisionSignals",
@@ -163,6 +173,122 @@ def list_signals(
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("List decision signals failed", exc)
+
+
+@router.post(
+    "/outcomes/run",
+    response_model=DecisionSignalOutcomeRunResponse,
+    responses={
+        **AUTH_RESPONSE,
+        400: {"model": ErrorResponse, "description": "请求字段非法"},
+        404: {"model": ErrorResponse, "description": "信号不存在"},
+        422: {"model": ErrorResponse, "description": "请求体校验失败"},
+        500: {"model": ErrorResponse, "description": "后验计算失败"},
+    },
+    summary="触发决策信号后验评估",
+    description=(
+        "显式触发 signal-level outcome 计算；默认跳过 completed 和终态 unable，"
+        "但会重算缺少行情数据等可恢复 unable；force=true 会重算并覆盖同一 "
+        "signal_id+horizon+engine_version。"
+    ),
+    operation_id="runDecisionSignalOutcomes",
+)
+def run_outcomes(request: DecisionSignalOutcomeRunRequest) -> DecisionSignalOutcomeRunResponse:
+    service = DecisionSignalOutcomeService()
+    try:
+        return DecisionSignalOutcomeRunResponse(
+            **service.run_outcomes(
+                signal_id=request.signal_id,
+                horizons=request.horizons,
+                force=request.force,
+                market=request.market,
+                stock_code=request.stock_code,
+                action=request.action,
+                source_type=request.source_type,
+                status=request.status,
+                limit=request.limit,
+            )
+        )
+    except DecisionSignalNotFoundError as exc:
+        raise _not_found(exc)
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Run decision signal outcomes failed", exc)
+
+
+@router.get(
+    "/outcomes",
+    response_model=DecisionSignalOutcomeListResponse,
+    responses={
+        **AUTH_RESPONSE,
+        400: {"model": ErrorResponse, "description": "查询参数非法"},
+        422: {"model": ErrorResponse, "description": "查询参数校验失败"},
+        500: {"model": ErrorResponse, "description": "查询失败"},
+    },
+    summary="查询决策信号后验结果",
+    description="分页查询 signal-level outcome；默认只查当前 signal 后验 engine_version。",
+    operation_id="listDecisionSignalOutcomes",
+)
+def list_outcomes(
+    signal_id: Optional[int] = Query(None, gt=0),
+    horizon: Optional[str] = Query(None),
+    engine_version: Optional[str] = Query(None),
+    eval_status: Optional[str] = Query(None),
+    outcome: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+) -> DecisionSignalOutcomeListResponse:
+    service = DecisionSignalOutcomeService()
+    try:
+        return DecisionSignalOutcomeListResponse(
+            **service.list_outcomes(
+                signal_id=signal_id,
+                horizon=horizon,
+                engine_version=engine_version,
+                eval_status=eval_status,
+                outcome=outcome,
+                page=page,
+                page_size=page_size,
+            )
+        )
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("List decision signal outcomes failed", exc)
+
+
+@router.get(
+    "/outcomes/stats",
+    response_model=DecisionSignalOutcomeStatsResponse,
+    responses={
+        **AUTH_RESPONSE,
+        400: {"model": ErrorResponse, "description": "查询参数非法"},
+        422: {"model": ErrorResponse, "description": "查询参数校验失败"},
+        500: {"model": ErrorResponse, "description": "统计失败"},
+    },
+    summary="查询决策信号后验统计",
+    description="默认统计当前 engine_version，且排除 archived 信号。",
+    operation_id="getDecisionSignalOutcomeStats",
+)
+def get_outcome_stats(
+    horizons: Optional[List[str]] = Query(None),
+    engine_version: Optional[str] = Query(None),
+    statuses: Optional[List[str]] = Query(None),
+) -> DecisionSignalOutcomeStatsResponse:
+    service = DecisionSignalOutcomeService()
+    try:
+        return DecisionSignalOutcomeStatsResponse(
+            **service.get_stats(
+                horizons=horizons,
+                engine_version=engine_version,
+                statuses=statuses,
+            )
+        )
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Get decision signal outcome stats failed", exc)
 
 
 @router.get(
@@ -223,6 +349,86 @@ def get_signal(signal_id: int) -> DecisionSignalItem:
         raise _internal_error("Get decision signal failed", exc)
     except Exception as exc:
         raise _internal_error("Get decision signal failed", exc)
+
+
+@router.get(
+    "/{signal_id}/outcomes",
+    response_model=DecisionSignalOutcomeListResponse,
+    responses={
+        **AUTH_RESPONSE,
+        404: {"model": ErrorResponse, "description": "信号不存在"},
+        422: {"model": ErrorResponse, "description": "路径参数校验失败"},
+        500: {"model": ErrorResponse, "description": "查询失败"},
+    },
+    summary="查询单个决策信号后验结果",
+    description="返回指定 signal_id 在当前 engine_version 下的后验结果。",
+    operation_id="listDecisionSignalOutcomesBySignal",
+)
+def list_signal_outcomes(signal_id: int) -> DecisionSignalOutcomeListResponse:
+    service = DecisionSignalOutcomeService()
+    try:
+        return DecisionSignalOutcomeListResponse(**service.list_signal_outcomes(signal_id))
+    except DecisionSignalNotFoundError as exc:
+        raise _not_found(exc)
+    except Exception as exc:
+        raise _internal_error("List decision signal outcomes failed", exc)
+
+
+@router.get(
+    "/{signal_id}/feedback",
+    response_model=DecisionSignalFeedbackItem,
+    responses={
+        **AUTH_RESPONSE,
+        404: {"model": ErrorResponse, "description": "信号不存在"},
+        422: {"model": ErrorResponse, "description": "路径参数校验失败"},
+        500: {"model": ErrorResponse, "description": "查询失败"},
+    },
+    summary="查询决策信号用户反馈",
+    description="没有反馈时返回 feedback_value=null；信号不存在时返回 404。",
+    operation_id="getDecisionSignalFeedback",
+)
+def get_feedback(signal_id: int) -> DecisionSignalFeedbackItem:
+    service = DecisionSignalOutcomeService()
+    try:
+        return DecisionSignalFeedbackItem(**service.get_feedback(signal_id))
+    except DecisionSignalNotFoundError as exc:
+        raise _not_found(exc)
+    except Exception as exc:
+        raise _internal_error("Get decision signal feedback failed", exc)
+
+
+@router.put(
+    "/{signal_id}/feedback",
+    response_model=DecisionSignalFeedbackItem,
+    responses={
+        **AUTH_RESPONSE,
+        400: {"model": ErrorResponse, "description": "请求字段非法"},
+        404: {"model": ErrorResponse, "description": "信号不存在"},
+        422: {"model": ErrorResponse, "description": "请求体或路径参数校验失败"},
+        500: {"model": ErrorResponse, "description": "更新失败"},
+    },
+    summary="写入决策信号用户反馈",
+    description="按 signal_id upsert 最新 useful/not_useful 反馈。",
+    operation_id="putDecisionSignalFeedback",
+)
+def put_feedback(signal_id: int, request: DecisionSignalFeedbackRequest) -> DecisionSignalFeedbackItem:
+    service = DecisionSignalOutcomeService()
+    try:
+        return DecisionSignalFeedbackItem(
+            **service.put_feedback(
+                signal_id,
+                feedback_value=request.feedback_value,
+                reason_code=request.reason_code,
+                note=request.note,
+                source=request.source,
+            )
+        )
+    except DecisionSignalNotFoundError as exc:
+        raise _not_found(exc)
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Put decision signal feedback failed", exc)
 
 
 @router.patch(

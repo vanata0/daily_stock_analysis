@@ -627,6 +627,40 @@ class TushareFetcher(BaseFetcher):
         
         return None
     
+    def get_industry(self, stock_code: str) -> Optional[str]:
+        """获取 A 股所属行业（Tushare stock_basic.industry，进程内缓存）。
+
+        行业分类变动极少，缓存可大幅减少外部调用并避免瞬时超时。
+        仅支持 A 股；港股/ETF/美股返回 None。
+        """
+        if self._api is None:
+            return None
+        if _is_us_code(stock_code) or _is_hk_market(stock_code) or _is_etf_code(stock_code):
+            return None
+
+        if not hasattr(self, "_industry_cache"):
+            self._industry_cache: Dict[str, Optional[str]] = {}
+        if stock_code in self._industry_cache:
+            return self._industry_cache[stock_code]
+
+        try:
+            ts_code = self._convert_stock_code(stock_code)
+            df = self._call_api_with_rate_limit(
+                "stock_basic", ts_code=ts_code, fields="ts_code,industry"
+            )
+        except Exception as exc:
+            logger.warning("[Tushare] 获取行业失败 %s: %s", stock_code, exc)
+            return None
+
+        industry: Optional[str] = None
+        if df is not None and not df.empty:
+            raw = df.iloc[0].get("industry")
+            industry = str(raw).strip() if raw not in (None, "") else None
+        # 仅缓存成功结果，失败下次重试
+        if industry:
+            self._industry_cache[stock_code] = industry
+        return industry
+
     def get_stock_list(self) -> Optional[pd.DataFrame]:
         """
         获取股票列表

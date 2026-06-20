@@ -2175,6 +2175,7 @@ class DsaEastMoneyHotspotProvider:
         frames.append(self._fallback_constituents(symbol))
         frames.append(self._related_hotspot_constituents(symbol))
         frame = self._merge_constituent_frames(frames)
+        frame = self._enrich_constituent_frame(frame)
         self._set_constituent_cache("concept", symbol, frame)
         return frame
 
@@ -2186,6 +2187,7 @@ class DsaEastMoneyHotspotProvider:
             self._fetch_eastmoney_constituents(symbol, source="industry"),
             self._fallback_constituents(symbol),
         ])
+        frame = self._enrich_constituent_frame(frame)
         self._set_constituent_cache("industry", symbol, frame)
         return frame
 
@@ -2735,25 +2737,66 @@ class DsaEastMoneyHotspotProvider:
                 merged.append(record)
         return pd.DataFrame(merged)
 
-    def _enrich_constituent_quotes(self, stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        codes = [str(item.get("code") or "").strip() for item in stocks if item.get("code")]
-        codes = [code for code in codes if code][:12]
-        if len(codes) < 4:
-            return stocks
+    def _fetch_constituent_quote_map(self, codes: List[str], *, limit: int = 12) -> Dict[str, Any]:
+        """Batch-fetch realtime quotes for constituent codes (shared by list/detail paths).
+
+        Relies on the DSA fetcher manager's bulk prefetch to warm the cache once,
+        so repeated calls across hotspots only pay cache lookups.
+        """
+        cleaned = [str(code or "").strip() for code in codes if str(code or "").strip()]
+        cleaned = cleaned[: max(0, limit)]
+        if len(cleaned) < 4:
+            return {}
         try:
             manager = _get_dsa_fetcher_manager()
-            manager.prefetch_realtime_quotes(codes)
+            manager.prefetch_realtime_quotes(cleaned)
         except Exception as exc:
             logger.debug("AlphaSift hotspot quote prefetch skipped: %s", exc)
-            return stocks
+            return {}
         quote_by_code: Dict[str, Any] = {}
-        for code in codes:
+        for code in cleaned:
             try:
                 quote = manager.get_realtime_quote(code, log_final_failure=False)
             except Exception:
                 quote = None
             if quote is not None:
                 quote_by_code[code] = quote
+        return quote_by_code
+
+    def _fetch_hotspot_spot_quote_map(self, codes: List[str], *, limit: int = 30) -> Dict[str, Any]:
+        """Fast, reliable quote map for the hotspot list path via Tushare.
+
+        Reads the Tushare fetcher directly (change_pct always, amount/turnover when the
+        Pro endpoint returns them) instead of the orchestrator quote, which avoids the
+        slow per-stock Tencent field-supplement. Tushare is the configured primary
+        source here; the full-market EM snapshot is unreliable in this deployment, so
+        change_pct (the dominant input to leader-role scoring) is sourced from Tushare.
+        """
+        cleaned = [str(code or "").strip() for code in codes if str(code or "").strip()]
+        cleaned = cleaned[: max(0, limit)]
+        if not cleaned:
+            return {}
+        try:
+            manager = _get_dsa_fetcher_manager()
+            tushare = manager._get_fetcher_by_name("TushareFetcher")
+        except Exception as exc:
+            logger.debug("AlphaSift hotspot quote map skipped: %s", exc)
+            return {}
+        if tushare is None:
+            return {}
+        quote_by_code: Dict[str, Any] = {}
+        for code in cleaned:
+            try:
+                quote = tushare.get_realtime_quote(code)
+            except Exception:
+                quote = None
+            if quote is not None:
+                quote_by_code[code] = quote
+        return quote_by_code
+
+    def _enrich_constituent_quotes(self, stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        codes = [str(item.get("code") or "").strip() for item in stocks if item.get("code")]
+        quote_by_code = self._fetch_constituent_quote_map(codes)
         if not quote_by_code:
             return stocks
         enriched: List[Dict[str, Any]] = []
@@ -2774,6 +2817,43 @@ class DsaEastMoneyHotspotProvider:
                     next_item["hot_stock_score"] = min(99.0, max(1.0, abs(next_item.get("change_pct") or 0.0) * 8.0))
             enriched.append(next_item)
         return enriched
+
+    def _enrich_constituent_frame(self, frame: Any) -> Any:
+        """Fill missing realtime quote columns on a constituent frame.
+
+        The hotspot discover/list path scores constituents to assign leader roles,
+        which needs change_pct/amount/turnover/volume metrics. Membership-only
+        fallbacks (THS/concept rosters) lack them, so mirror the detail path by
+        enriching quotes here before the package scores and ranks constituents.
+        """
+        import pandas as pd
+
+        try:
+            df = pd.DataFrame(frame)
+        except Exception:
+            return frame
+        if df.empty:
+            return frame
+        code_col = next((col for col in ("code", "代码", "证券代码") if col in df.columns), None)
+        if code_col is None:
+            return df
+        codes = [str(value or "").strip() for value in df[code_col].tolist()]
+        quote_by_code = self._fetch_hotspot_spot_quote_map(codes, limit=30)
+        if not quote_by_code:
+            return df
+        quote_fields = ("change_pct", "amount", "turnover_rate", "volume_ratio")
+        for column in quote_fields:
+            if column not in df.columns:
+                df[column] = None
+        for idx, code in zip(df.index, codes):
+            quote = quote_by_code.get(code)
+            if quote is None:
+                continue
+            for column in quote_fields:
+                existing = df.at[idx, column]
+                if existing in (None, "") or (isinstance(existing, float) and pd.isna(existing)):
+                    df.at[idx, column] = _safe_float(getattr(quote, column, None))
+        return df
 
     def _normalize_constituent_records(self, frame: Any) -> List[Dict[str, Any]]:
         import pandas as pd

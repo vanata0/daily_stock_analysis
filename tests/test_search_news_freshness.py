@@ -164,6 +164,45 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         p1.search.assert_called_once()
         p2.search.assert_called_once()
 
+    def test_searxng_provider_declares_no_reliable_publish_dates(self) -> None:
+        """SearXNG opts out of date filtering; other providers keep the strict default."""
+        from src.search_service import BaseSearchProvider, SearXNGSearchProvider
+
+        self.assertTrue(BaseSearchProvider.supplies_publish_dates)
+        self.assertFalse(SearXNGSearchProvider.supplies_publish_dates)
+
+    def test_undated_results_kept_only_for_providers_without_reliable_dates(self) -> None:
+        """Undated hits survive recency filtering only for date-less providers (e.g. SearXNG)."""
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        undated_hit = _response([_result("贵州茅台 600519 最新公告", None)])
+
+        # Provider that supplies dates: an undated result is dropped as unverifiable.
+        dated_provider = SimpleNamespace(
+            is_available=True,
+            name="Bocha",
+            supplies_publish_dates=True,
+            search=MagicMock(return_value=undated_hit),
+        )
+        service._providers = [dated_provider]
+        resp_dropped = service.search_stock_news("600519", "贵州茅台", max_results=3)
+        self.assertEqual(resp_dropped.results, [])
+
+        # Date-less provider (SearXNG): the same undated hit is kept.
+        searxng_provider = SimpleNamespace(
+            is_available=True,
+            name="SearXNG",
+            supplies_publish_dates=False,
+            search=MagicMock(return_value=undated_hit),
+        )
+        service._providers = [searxng_provider]
+        resp_kept = service.search_stock_news("600519", "贵州茅台", max_results=3)
+        self.assertEqual([r.title for r in resp_kept.results], ["贵州茅台 600519 最新公告"])
+
     def test_search_stock_news_records_provider_diagnostics_for_fallback(self) -> None:
         """News search provider attempts should appear in run-flow diagnostics."""
         today = datetime.now().date()

@@ -157,7 +157,12 @@ class SearchResponse:
 
 class BaseSearchProvider(ABC):
     """搜索引擎基类"""
-    
+
+    # Engines that don't reliably return per-result publish dates (e.g. SearXNG
+    # meta-search) set this to False, so the recency filter keeps their undated
+    # hits instead of dropping every result for lack of a parseable date.
+    supplies_publish_dates: bool = True
+
     def __init__(self, api_keys: List[str], name: str):
         """
         初始化搜索引擎
@@ -1705,6 +1710,10 @@ class SearXNGSearchProvider(BaseSearchProvider):
     Otherwise, the provider can lazily discover public instances from
     searx.space and rotate across them with per-request failover.
     """
+
+    # SearXNG meta-search rarely carries reliable per-result publish dates, so
+    # recency filtering keeps its undated hits (relevance filtering still applies).
+    supplies_publish_dates = False
 
     PUBLIC_INSTANCES_URL = "https://searx.space/data/instances.json"
     PUBLIC_INSTANCES_CACHE_TTL_SECONDS = 3600
@@ -3726,6 +3735,7 @@ class SearchService:
                     search_days=search_days,
                     max_results=provider_max_results,
                     log_scope=f"{stock_code}:{provider.name}:stock_news",
+                    keep_unknown=not getattr(provider, "supplies_publish_dates", True),
                 )
                 had_provider_success = had_provider_success or bool(response.success)
 

@@ -18,6 +18,7 @@ import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
 import pandas as pd
@@ -677,7 +678,7 @@ class StockAnalysisPipeline:
 
             # Step 5: 获取分析上下文（技术面数据）
             self._emit_progress(58, f"{stock_name}：正在整理分析上下文")
-            context = self.db.get_analysis_context(code)
+            context = self._get_analysis_context_with_market_fallback(code)
 
             if context is None:
                 logger.warning(f"{stock_name}({code}) 无法获取历史行情数据，将仅基于新闻和实时行情分析")
@@ -1582,7 +1583,7 @@ class StockAnalysisPipeline:
     def _load_agent_analysis_context(self, code: str, stock_name: str) -> Dict[str, Any]:
         """Load daily-bar context for Agent pack summaries without blocking analysis."""
         try:
-            context = self.db.get_analysis_context(code)
+            context = self._get_analysis_context_with_market_fallback(code)
         except Exception as exc:
             logger.warning(
                 "[%s] Agent analysis context load failed; daily_bars will be marked missing: %s",
@@ -1605,6 +1606,83 @@ class StockAnalysisPipeline:
             "today": {},
             "yesterday": {},
         }
+
+    def _get_analysis_context_with_market_fallback(self, code: str) -> Optional[Dict[str, Any]]:
+        """Load analysis context, fetching JP/KR daily bars when DB has no context."""
+        context = self.db.get_analysis_context(code)
+        if isinstance(context, dict) and context:
+            return context
+
+        market = get_market_for_stock(normalize_stock_code(code))
+        if market not in {"jp", "kr"}:
+            return context
+
+        try:
+            df, source_name = self.fetcher_manager.get_daily_data(code, days=60)
+        except Exception as exc:
+            logger.warning("[%s] JP/KR daily fallback fetch failed: %s", code, exc)
+            return context
+
+        if df is None or df.empty:
+            logger.warning("[%s] JP/KR daily fallback returned empty data", code)
+            return context
+
+        try:
+            self.db.save_daily_data(df, code, source_name)
+            refreshed = self.db.get_analysis_context(code)
+            if isinstance(refreshed, dict) and refreshed:
+                return refreshed
+        except Exception as exc:
+            logger.warning("[%s] JP/KR daily fallback persistence failed: %s", code, exc)
+
+        return self._build_analysis_context_from_daily_df(code, df)
+
+    def _build_analysis_context_from_daily_df(self, code: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        if df is None or df.empty:
+            return None
+
+        frame = df.copy()
+        frame.columns = [str(column).lower() for column in frame.columns]
+        if "date" in frame.columns:
+            frame = frame.sort_values("date")
+        frame = frame.tail(2)
+        rows = frame.to_dict(orient="records")
+        if not rows:
+            return None
+
+        def normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
+            normalized: Dict[str, Any] = {"code": row.get("code") or code}
+            for key in ("open", "high", "low", "close", "volume", "amount", "pct_chg", "ma5", "ma10", "ma20", "volume_ratio"):
+                value = row.get(key)
+                if pd.notna(value):
+                    normalized[key] = float(value)
+            row_date = row.get("date")
+            if hasattr(row_date, "date"):
+                row_date = row_date.date()
+            normalized["date"] = row_date.isoformat() if hasattr(row_date, "isoformat") else str(row_date)
+            return normalized
+
+        today = normalize_row(rows[-1])
+        context: Dict[str, Any] = {
+            "code": code,
+            "date": today.get("date"),
+            "today": today,
+        }
+        if len(rows) > 1:
+            yesterday = normalize_row(rows[-2])
+            context["yesterday"] = yesterday
+            yesterday_volume = yesterday.get("volume")
+            if yesterday_volume:
+                context["volume_change_ratio"] = round(float(today.get("volume", 0)) / float(yesterday_volume), 2)
+            yesterday_close = yesterday.get("close")
+            if yesterday_close:
+                context["price_change_ratio"] = round(
+                    (float(today.get("close", 0)) - float(yesterday_close)) / float(yesterday_close) * 100,
+                    2,
+                )
+            context["ma_status"] = self.db._analyze_ma_status(SimpleNamespace(**today))
+
+        return context
 
     def _load_daily_market_context(
         self,

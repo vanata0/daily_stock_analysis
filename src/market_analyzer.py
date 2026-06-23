@@ -15,6 +15,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from inspect import getattr_static
 from typing import Optional, Dict, Any, List
 
 import pandas as pd
@@ -24,6 +25,11 @@ from src.report_language import normalize_report_language
 from src.search_service import SearchService
 from src.core.market_profile import get_profile, MarketProfile
 from src.core.market_strategy import get_market_strategy_blueprint
+from src.llm.backend_registry import (
+    resolve_generation_backend_id,
+    resolve_generation_fallback_backend_id,
+)
+from src.llm.generation_backend import GenerationError
 from src.schemas.market_light import MarketLightSnapshot
 from src.services.run_diagnostics import record_llm_run, record_llm_run_started
 from src.services.intelligence_service import IntelligenceService
@@ -537,6 +543,24 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             大盘复盘报告文本
         """
+        backend_error = self._get_analyzer_generation_backend_config_error()
+        if backend_error is not None:
+            logger.error(
+                "[大盘] %s action=generate_review status=failed error_type=%s error=%s",
+                self._log_context(),
+                type(backend_error).__name__,
+                backend_error,
+            )
+            record_llm_run(
+                success=False,
+                provider="litellm",
+                model=getattr(self.config, "litellm_model", None),
+                call_type="market_review",
+                error_type=type(backend_error).__name__,
+                error_message=backend_error,
+            )
+            raise backend_error
+
         if not self.analyzer or not self.analyzer.is_available():
             logger.warning(
                 "[大盘] %s action=generate_review status=fallback_template reason=no_analyzer",
@@ -593,6 +617,24 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             self._log_context(),
         )
         return self._generate_template_review(overview, news)
+
+    def _get_analyzer_generation_backend_config_error(self) -> Optional[GenerationError]:
+        """Return analyzer backend config errors without relying on dynamic mock attributes."""
+        if self.analyzer is None:
+            try:
+                resolve_generation_backend_id(self.config)
+                resolve_generation_fallback_backend_id(self.config)
+            except GenerationError as exc:
+                return exc
+            return None
+        missing = object()
+        if getattr_static(self.analyzer, "get_generation_backend_config_error", missing) is missing:
+            return None
+        method = getattr(self.analyzer, "get_generation_backend_config_error", None)
+        if not callable(method):
+            return None
+        error = method()
+        return error if isinstance(error, GenerationError) else None
 
     def build_market_review_payload(
         self,

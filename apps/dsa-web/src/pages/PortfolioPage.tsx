@@ -51,6 +51,7 @@ import type {
 } from '../types/portfolio';
 import { areStockCodesEquivalent, normalizeStockCode } from '../utils/stockCode';
 import { parseDecisionSignalDate } from '../utils/decisionSignalTime';
+import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../utils/decisionAction';
 
 const PIE_COLORS = ['#00d4ff', '#00ff88', '#ffaa00', '#ff7a45', '#7f8cff', '#ff4466'];
 const DEFAULT_PAGE_SIZE = 20;
@@ -160,6 +161,7 @@ async function loadPortfolioSignalLookup(lookup: PortfolioSignalLookup): Promise
 const PortfolioPage: React.FC = () => {
   const { language, t } = useUiLanguage();
   const text = PORTFOLIO_TEXT[language];
+  const decisionActionLabels = useMemo(() => buildDecisionActionLabelMap(t), [t]);
 
   // Set page title
   useEffect(() => {
@@ -914,6 +916,15 @@ const PortfolioPage: React.FC = () => {
   };
 
   const decisionSignalRiskPreviewItems = (risk?.decisionSignalRisk?.items ?? []).slice(0, 3);
+  const formatDecisionSignalRiskAction = (signal: Partial<DecisionSignalItem>): string => (
+    getDecisionActionLabel(
+      signal.action,
+      signal.actionLabel,
+      null,
+      text.alert,
+      decisionActionLabels,
+    ) ?? text.alert
+  );
 
   return (
     <div className="portfolio-page min-h-screen space-y-4 p-4 md:p-6">
@@ -1306,7 +1317,7 @@ const PortfolioPage: React.FC = () => {
                   <div className="space-y-1 pt-1">
                     {decisionSignalRiskPreviewItems.map((item) => (
                       <div key={`${item.accountId ?? 'all'}-${item.market}-${item.symbol}-${item.signal.id ?? item.signal.action}`} className="truncate text-foreground">
-                        {item.symbol} · {item.signal.actionLabel || item.signal.action || text.alert}
+                        {item.symbol} · {formatDecisionSignalRiskAction(item.signal)}
                       </div>
                     ))}
                   </div>

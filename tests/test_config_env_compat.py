@@ -53,6 +53,89 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_generation_backend_env_defaults_to_litellm_contract(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(os.environ, {"STOCK_LIST": "600519"}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.generation_backend, "litellm")
+        self.assertEqual(config.generation_fallback_backend, "litellm")
+        self.assertEqual(config.agent_generation_backend, "auto")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_generation_backend_env_accepts_phase1_values(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "GENERATION_BACKEND": " LiteLLM ",
+                "GENERATION_FALLBACK_BACKEND": "LITELLM",
+                "AGENT_GENERATION_BACKEND": " litellm ",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.generation_backend, "litellm")
+        self.assertEqual(config.generation_fallback_backend, "litellm")
+        self.assertEqual(config.agent_generation_backend, "litellm")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_prompt_cache_config_defaults_are_safe(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(os.environ, {"STOCK_LIST": "600519"}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.llm_prompt_cache_telemetry_enabled)
+        self.assertFalse(config.llm_prompt_cache_hints_enabled)
+        self.assertEqual(config.llm_prompt_cache_diagnostics_level, "off")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_prompt_cache_config_parses_env_values(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "LLM_PROMPT_CACHE_TELEMETRY_ENABLED": "false",
+                "LLM_PROMPT_CACHE_HINTS_ENABLED": "true",
+                "LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL": " DEBUG ",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertFalse(config.llm_prompt_cache_telemetry_enabled)
+        self.assertTrue(config.llm_prompt_cache_hints_enabled)
+        self.assertEqual(config.llm_prompt_cache_diagnostics_level, "debug")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_prompt_cache_invalid_diagnostics_level_falls_back_to_off(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL": "verbose",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_prompt_cache_diagnostics_level, "off")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_load_from_env_uses_stable_fundamental_timeout_defaults(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):
@@ -67,6 +150,38 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
         self.assertEqual(config.fundamental_stage_timeout_seconds, 8.0)
         self.assertEqual(config.fundamental_fetch_timeout_seconds, 3.0)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_schedule_times_parse_dedupe_and_fallback(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "SCHEDULE_TIME": "18:00",
+                "SCHEDULE_TIMES": "15:10,09:20,15:10",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.schedule_time, "18:00")
+        self.assertEqual(config.schedule_times, ["09:20", "15:10"])
+
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "SCHEDULE_TIME": "09:30",
+                "SCHEDULE_TIMES": "",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.schedule_times, [config.schedule_time])
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -528,6 +643,97 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
                 config = Config._load_from_env()
 
         self.assertEqual(config.stock_list, ["600519", "000001"])
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_custom_webhook_template_unescapes_compose_saved_placeholders(
+        self,
+        _mock_parse_yaml,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                'CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$$title_json,"content":$$content_json}\n',
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(env_path),
+                    "CUSTOM_WEBHOOK_BODY_TEMPLATE": '{"title":$$title_json,"content":$$content_json}',
+                },
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        self.assertEqual(
+            config.custom_webhook_body_template,
+            '{"title":$title_json,"content":$content_json}',
+        )
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_custom_webhook_template_unescapes_compose_saved_braced_placeholders(
+        self,
+        _mock_parse_yaml,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$${content_json}}\n',
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {"ENV_FILE": str(env_path)},
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        self.assertEqual(
+            config.custom_webhook_body_template,
+            '{"content":${content_json}}',
+        )
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_custom_webhook_template_does_not_affect_llm_contract(
+        self,
+        _mock_parse_litellm_yaml: object,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "STOCK_LIST=600519",
+                        "LITELLM_MODEL=openai/gpt-5.5",
+                        "OPENAI_MODEL=gpt-5.5",
+                        "OPENAI_API_KEY=runtime-openai-key",
+                        "OPENAI_BASE_URL=https://openai.example/v1",
+                        "CUSTOM_WEBHOOK_BODY_TEMPLATE={\"title\":$$title_json,\"content\":$$content_json}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(env_path),
+                },
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "openai/gpt-5.5")
+        self.assertEqual(config.openai_model, "gpt-5.5")
+        self.assertEqual(config.openai_api_key, "runtime-openai-key")
+        self.assertEqual(config.openai_base_url, "https://openai.example/v1")
+        self.assertEqual(
+            config.custom_webhook_body_template,
+            '{"title":$title_json,"content":$content_json}',
+        )
 
     def test_refresh_stock_list_preserves_empty_required_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -20,6 +20,8 @@
 
 优先级保持不变：`LITELLM_CONFIG` / `LITELLM_CONFIG_YAML` > `LLM_CHANNELS` > legacy provider keys。P4 只补文档，不迁移、不清空、不静默改写旧配置。
 
+Generation backend 配置是更外层的运行时选择契约。Phase 1 只支持 `GENERATION_BACKEND=litellm`、`GENERATION_FALLBACK_BACKEND=litellm` 和 `AGENT_GENERATION_BACKEND=auto|litellm`；这些字段不会改变本页所述的 provider/model/Base URL 三层路由优先级。配置本地 CLI、Hermes 或其他非 `litellm` backend 会得到明确配置错误，不会自动降级到 LiteLLM。
+
 ## Web 设置页路径
 
 推荐优先使用 Web 设置页完成 Channels 配置：

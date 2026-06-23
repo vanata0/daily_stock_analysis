@@ -871,6 +871,11 @@ def test_service_sanitizes_text_and_json_before_persisting(isolated_db) -> None:
                 "auth_header": "Authorization: Basic dXNlcjpwYXNz",
                 "cookie_header": "Cookie: session=abc123",
             },
+            data_quality_summary={
+                "level": "limited",
+                "email_password": "mail-secret",
+                "note": "password=mail-secret-2",
+            },
             metadata={
                 "access_token": "abc",
                 "callback": "https://example.com/cb",
@@ -900,6 +905,8 @@ def test_service_sanitizes_text_and_json_before_persisting(isolated_db) -> None:
     assert "dXNlcjpwYXNz" not in response_blob
     assert "pwYXNz" not in response_blob
     assert "session=abc123" not in response_blob
+    assert "mail-secret" not in response_blob
+    assert "mail-secret-2" not in response_blob
     assert "secret-value" not in response_blob
     assert "sk-1234567890abcdef123456" not in response_blob
     assert "[REDACTED" in response_blob
@@ -914,6 +921,7 @@ def test_service_sanitizes_text_and_json_before_persisting(isolated_db) -> None:
                 row.invalidation,
                 row.watch_conditions,
                 row.evidence_json,
+                row.data_quality_summary_json,
                 row.metadata_json,
             )
         )
@@ -933,6 +941,8 @@ def test_service_sanitizes_text_and_json_before_persisting(isolated_db) -> None:
     assert "dXNlcjpwYXNz" not in stored_blob
     assert "pwYXNz" not in stored_blob
     assert "session=abc123" not in stored_blob
+    assert "mail-secret" not in stored_blob
+    assert "mail-secret-2" not in stored_blob
     assert "secret-value" not in stored_blob
     assert "sk-1234567890abcdef123456" not in stored_blob
 

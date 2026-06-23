@@ -3,7 +3,6 @@ export * from './ReportDiagnostics';
 export * from './AnalysisContextSummary';
 export * from './ReportOverview';
 export * from './ReportStrategy';
-export * from './ReportDecisionSignals';
 export * from './ReportNews';
 export * from './ReportDetails';
 export * from './ReportMarkdown';

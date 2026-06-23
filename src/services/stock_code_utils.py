@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from data_provider.base import is_bse_code
+from data_provider.base import canonical_stock_code, is_bse_code
 
 
 # Known exchange prefixes (case-insensitive) and the digit lengths they accept.
@@ -107,3 +107,28 @@ def normalize_code(raw: str) -> Optional[str]:
     if stripped is not None:
         return stripped
     return None
+
+
+def resolve_index_stock_code_for_analysis(raw: str) -> str:
+    """Resolve bare JP/KR candidates via stock index and keep suffix forms.
+
+    For code-like inputs:
+    - Existing index-backed entries (e.g. ``005930`` -> ``005930.KS``) are
+      preferred.
+    - Non-matching code-like inputs keep the canonicalized input.
+
+    Non-code-like values are still canonicalized only, letting callers keep
+    their own validation policy (e.g. API name resolution path).
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+
+    if is_code_like(text):
+        from src.data.stock_index_loader import resolve_index_stock_code
+
+        resolved = resolve_index_stock_code(text)
+        if resolved:
+            return canonical_stock_code(resolved)
+
+    return canonical_stock_code(text)

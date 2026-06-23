@@ -377,13 +377,13 @@ describe('PortfolioPage FX refresh', () => {
             accountId: 1,
             symbol: '600519',
             market: 'cn',
-            signal: makeDecisionSignal({ id: 201, action: 'sell', actionLabel: '卖出' }),
+            signal: makeDecisionSignal({ id: 201, action: 'sell', actionLabel: null }),
           },
           {
             accountId: 1,
             symbol: '300750',
             market: 'cn',
-            signal: makeDecisionSignal({ id: 202, stockCode: '300750', action: 'alert', actionLabel: '预警' }),
+            signal: makeDecisionSignal({ id: 202, stockCode: '300750', action: 'alert', actionLabel: null }),
           },
         ],
       },
@@ -398,6 +398,35 @@ describe('PortfolioPage FX refresh', () => {
     expect(screen.getByText(/卖出: 1 · 减仓: 0 · 预警: 1/)).toBeInTheDocument();
     expect(screen.getByText('600519 · 卖出')).toBeInTheDocument();
     expect(screen.getByText('300750 · 预警')).toBeInTheDocument();
+    expect(screen.queryByText('600519 · sell')).not.toBeInTheDocument();
+    expect(screen.queryByText('300750 · alert')).not.toBeInTheDocument();
+  });
+
+  it('uses the current UI language for portfolio decision signal risk action labels', async () => {
+    getRisk.mockResolvedValueOnce(makeRisk({
+      decisionSignalRisk: {
+        available: true,
+        total: 1,
+        actions: { sell: 1, reduce: 0, alert: 0 },
+        items: [
+          {
+            accountId: 1,
+            symbol: '600519',
+            market: 'cn',
+            signal: makeDecisionSignal({ id: 203, action: 'sell', actionLabel: '卖出' }),
+          },
+        ],
+      },
+    }));
+
+    renderEnglishPage();
+
+    await waitForInitialLoad();
+
+    expect(screen.getByText('AI risk signals')).toBeInTheDocument();
+    expect(screen.getByText('600519 · Sell')).toBeInTheDocument();
+    expect(screen.queryByText('600519 · 卖出')).not.toBeInTheDocument();
+    expect(screen.queryByText('600519 · sell')).not.toBeInTheDocument();
   });
 
   it('renders portfolio decision signal risk fail-open state', async () => {

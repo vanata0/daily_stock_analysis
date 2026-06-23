@@ -143,7 +143,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 
 | Secret Name | Description | Required |
 |------------|------|:----:|
-| `STOCK_LIST` | Watchlist codes, e.g., `600519,300750,002594` | ✅ |
+| `STOCK_LIST` | Watchlist codes, e.g., `600519,300750,002594,7203.T,005930.KS` | ✅ |
 | `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) optimized for Chinese content; the same key can also be used for Anspire LLM fallback scenarios (example model: `Doubao-Seed-2.0-lite`) | Recommended |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) search-engine results for realtime financial news | Recommended |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) Search API (for news search) | Optional |
@@ -195,6 +195,9 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 
 | Variable | Description | Default | Required |
 |--------|------|--------|:----:|
+| `GENERATION_BACKEND` | Generation backend for regular analysis. Phase 1 only supports `litellm`; unknown values are treated as configuration errors and are not silently downgraded | `litellm` | No |
+| `GENERATION_FALLBACK_BACKEND` | Backend-level fallback. The current `litellm -> litellm` setting resolves to no-op; model fallback remains owned by LiteLLM config | `litellm` | No |
+| `AGENT_GENERATION_BACKEND` | Agent Chat generation backend. In Phase 1, `auto` is equivalent to the existing LiteLLM tool-calling backend | `auto` | No |
 | `LITELLM_MODEL` | Primary model, format `provider/model` (e.g. `gemini/gemini-3.1-pro-preview`), recommended | - | No |
 | `AGENT_LITELLM_MODEL` | Optional Agent-only primary model; when empty it inherits the primary model, and bare names are normalized to `openai/<model>` | - | No |
 | `LITELLM_FALLBACK_MODELS` | Fallback models, comma-separated | - | No |
@@ -323,6 +326,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 > - **A-shares**: Returns aggregated capabilities by `valuation/growth/earnings/institution/capital_flow/dragon_tiger/boards`.
 > - **ETFs**: Returns available items, marks missing capabilities as `not_supported`, and does not affect the original flow overall.
 > - **US/HK stocks**: Returns `valuation/growth/earnings/belong_boards` (sourced from `info.sector`/`info.industry`) via the yfinance adapter; `institution/capital_flow/dragon_tiger/boards` stay `not_supported` because no offshore data feed exists today. Falls back to a full `not_supported` block if yfinance is unavailable or returns empty payloads. Still fail-open.
+> - **Japanese/Korean stocks**: Current MVP uses Yfinance daily/basic quote coverage only; `institution`, `capital_flow`, `dragon_tiger`, and `boards` are not fully supported and degrade to `not_supported` (see [market boundaries](market-support.md)).
 > - Any exception uses fail-open logic, only logs errors without affecting the main technical/news/chip pipeline.
 > - **Field contracts**:
 >   - `fundamental_context.belong_boards` = related board list for the stock; A-shares are sourced from AkShare board membership, US/HK from yfinance `info.sector`/`info.industry`, `[]` when unavailable;
@@ -352,6 +356,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `MARKET_REVIEW_COLOR_SCHEME` | Index change color style in market reviews: `green_up` = green gains/red losses (default), `red_up` = red gains/green losses | `green_up` |
 | `SCHEDULE_ENABLED` | Enable scheduled tasks | `false` |
 | `SCHEDULE_TIME` | Scheduled execution time | `18:00` |
+| `SCHEDULE_TIMES` | Multiple scheduled execution times, comma-separated; falls back to `SCHEDULE_TIME` when empty | empty |
 | `SCHEDULE_RUN_IMMEDIATELY` | Run once immediately when scheduler mode starts; when unset it keeps following the legacy `RUN_IMMEDIATELY` runtime override | `true` |
 | `RUN_IMMEDIATELY` | Run once immediately for non-scheduler startup; also acts as the legacy fallback when `SCHEDULE_RUN_IMMEDIATELY` is unset | `true` |
 | `LOG_DIR` | Log directory | `./logs` |
@@ -609,7 +614,9 @@ crontab -e
 
 > Note: Scheduled mode reloads the saved `STOCK_LIST` before each run. If you also pass `--stocks`, it will not pin future scheduled executions to the startup snapshot; use a normal one-off run when you want to analyze a temporary stock list.
 >
-> When the built-in scheduler is started via `python main.py --schedule`, `python main.py --serve --schedule`, or an equivalent local mode, saving a new `SCHEDULE_TIME` from the WebUI will rebind the daily job on the next scheduler poll without restarting the process. The previous trigger time is removed instead of being kept alongside the new one.
+> When the built-in scheduler is started via `python main.py --schedule` or an equivalent CLI-only mode, saving a new `SCHEDULE_TIME` / `SCHEDULE_TIMES` from the WebUI will rebind the daily jobs on the next scheduler poll without restarting the process. The previous trigger times are removed instead of being kept alongside the new ones. `python main.py --serve --schedule` is owned by the Web/API runtime scheduler, so long-running WebUI/API/Desktop processes start, stop, or rebuild the runtime scheduler after saving `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, or `SCHEDULE_TIMES`.
+>
+> The Web/API runtime scheduler run-now endpoint only accepts a request when no analysis is already running; if an analysis is in progress, it returns a busy response instead of reporting a queued run.
 
 ### Market Phase Baseline (Issue #1386 P0)
 
@@ -858,6 +865,11 @@ CUSTOM_WEBHOOK_BODY_TEMPLATE={"msg_type":"text","content":$content_json}
 Available placeholders: `$content_json`, `$content`, `$title_json`, `$title`.
 Raw `$content` / `$title` are not JSON-escaped, so quotes or newlines can make
 the template invalid and trigger fallback.
+
+In Docker Compose deployments, saving this value from Web Settings writes these
+app placeholders as `$$content_json` / `$$title_json` and restores the single
+`$` form at runtime, preventing Compose from expanding them to empty values. If
+you edit the Docker `.env` manually, use the same `$$content_json` style.
 
 Bark stays on the custom webhook baseline; no `BARK_*` settings are required.
 Set the Bark endpoint in `CUSTOM_WEBHOOK_URLS`. When using Bark with a global
@@ -1167,7 +1179,7 @@ Read paths lazily expire active signals whose `expires_at` has passed before lis
 
 These endpoints inherit the existing `/api/v1/*` admin authentication middleware: when `ADMIN_AUTH_ENABLED=true`, callers must send a valid admin session cookie. DecisionSignal does not add a separate auth scheme.
 
-#1390 P4 wires the existing `DecisionSignal` API into the Web UI without adding backend contracts, database tables, or configuration. The sidebar now includes an "AI signals" entry at `/decision-signals`; the page defaults to `status=active`, supports filtering by market, stock code, action, market phase, source, and status, and includes a latest-active lookup by stock code. Signal details show action, confidence/score, horizon, plan_quality, market_phase, price plan, risk, watch conditions, source report, and data quality. The Web UI only allows marking a signal as `closed`, `invalidated`, or `archived`; it does not restore terminal states to active.
+#1390 P4 wires the existing `DecisionSignal` API into the Web UI without adding backend contracts, database tables, or configuration. The sidebar "AI signals" entry at `/decision-signals` is the centralized query surface for structured decision signals; the page defaults to `status=active`, supports filtering by market, stock code, action, market phase, source, source report ID, and status, and includes a latest-active lookup by stock code. Signal details show action, confidence/score, horizon, plan_quality, market_phase, price plan, risk, watch conditions, source report, and data quality. The Web UI only allows marking a signal as `closed`, `invalidated`, or `archived`; it does not restore terminal states to active.
 
 #1390 P5 adds signal-level feedback, forward outcome evaluation, and stats sidecars. It does not extend the `decision_signals` main table and does not reuse `BacktestResult`, which is tied to `analysis_history_id`. `decision_signal_feedback` stores the latest `useful|not_useful` feedback per `signal_id` with optional reason/note/source. `decision_signal_outcomes` stores idempotent rows by `(signal_id, horizon, engine_version)`, currently `engine_version=decision-signal-v1`. Each outcome freezes `action/market/market_phase/source_type/source_agent/plan_quality/data_quality_level/holding_state` at evaluation time so historical stats are not rewritten by later live-join changes. Deleting history first finds `source_type=analysis` signals bound to the deleted history IDs, then removes their feedback/outcome sidecars.
 
@@ -1179,7 +1191,9 @@ The portfolio page loads AI signals as a non-blocking enhancement: portfolio sna
 
 #1390 P6 reuses `DecisionSignal` across alerts, notifications, and portfolio risk without adding tables, migrations, or configuration. Real stock-level alert triggers first link the latest active signal for the same symbol and write a low-sensitive `decision_signal_summary` into `alert_triggers.diagnostics`; when no active signal exists, the worker creates only a minimal `source_type=alert`, `action=alert` signal. Its `trace_id=alert-rule-<hash>` is for best-effort retry de-duplication, not active-signal overwrites, and the payload intentionally omits `market_phase` to avoid cross-phase duplicates. Alert and analysis notifications reference only public summary fields such as `action/horizon/reason/watch_conditions/risk_summary/source_report_id`, and notification failure does not block trigger or signal writes. `GET /api/v1/portfolio/risk` now includes a `decision_signal_risk` block that counts active `sell/reduce/alert` signals for current holdings, explicitly excluding `avoid/buy/add/hold/watch`; if signal lookup fails, the risk endpoint fails open and the Web risk card shows a degraded state.
 
-Regular stock history reports show `source_type=analysis` signals extracted from that report after the strategy block, using `source_report_id=<recordId>` as the query. Reports without a `recordId`, market reviews, and other non-regular stock reports do not issue this query. Empty results show a report-level empty state, and loading failures affect only that card, not the report body, news, diagnostics, or transparency sections.
+#1390 P7 is documented in [DecisionSignal Topic](decision-signals.md) (Chinese-only). P7 adds no `DECISION_SIGNAL_*` configuration, database migration, API field, or runtime switch. Rollback is to revert the related code. After rollback, signal extraction and writes stop, while report saving, alert triggering, notification sending, and the portfolio risk main flow continue through their existing paths. Historical signal, feedback, and outcome rows are not deleted automatically.
+
+Regular stock history report details no longer embed the extracted `source_type=analysis` signals and no longer issue a `source_report_id=<recordId>` query when the report details open. To inspect structured AI recommendations, use `/decision-signals` and filter by source report ID, open the `/decision-signals?sourceReportId=<recordId>` deep link, or search by stock. When source report ID is filled or provided through that URL parameter, the Web UI sends an exact `source_type=analysis + source_report_id=<recordId>` query without adding default `status=active` or other list filters, preserving the best-effort lazy backfill semantics for older reports.
 
 ## Backtesting
 
@@ -1399,6 +1413,9 @@ python main.py --serve-only --host 0.0.0.0 --port 8888
 | A-shares | 6-digit number | `600519`, `000001`, `300750` |
 | BSE (Beijing) | 8/4/92 prefix, 6-digit; supports `BJ` prefix or `.BJ` suffix | `920748`, `BJ920493`, `920493.BJ` |
 | HK stocks | hk + 5-digit number | `hk00700`, `hk09988` |
+| US stocks | 1-5 letters, optional `.X` suffix | `AAPL`, `TSLA`, `BRK.B` |
+| Japanese stocks | Yahoo `.T` suffix | `7203.T`, `6758.T` |
+| Korean stocks | Yahoo `.KS` / `.KQ` suffix | `005930.KS`, `035720.KQ` |
 
 ### Notes
 

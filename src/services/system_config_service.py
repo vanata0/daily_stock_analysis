@@ -210,8 +210,9 @@ class SystemConfigService:
         "astrbot": ("ASTRBOT_URL",),
     }
 
-    def __init__(self, manager: Optional[ConfigManager] = None):
+    def __init__(self, manager: Optional[ConfigManager] = None, runtime_scheduler: Optional[Any] = None):
         self._manager = manager or ConfigManager()
+        self._runtime_scheduler = runtime_scheduler
 
     def get_schema(self) -> Dict[str, Any]:
         """Return grouped schema metadata for UI rendering."""
@@ -1464,6 +1465,18 @@ class SystemConfigService:
                 updates=dict(updates),
             )
         )
+        if self._runtime_scheduler is not None and submitted_keys & {
+            "SCHEDULE_ENABLED",
+            "SCHEDULE_TIME",
+            "SCHEDULE_TIMES",
+        }:
+            try:
+                self._runtime_scheduler.reconcile_from_config(
+                    clear_enabled_override="SCHEDULE_ENABLED" in submitted_keys,
+                )
+            except Exception as exc:  # pragma: no cover - defensive branch
+                logger.error("Runtime scheduler reconcile failed: %s", exc, exc_info=True)
+                warnings.append("Configuration updated but runtime scheduler reconcile failed")
 
         return {
             "success": True,
@@ -1542,7 +1555,6 @@ class SystemConfigService:
             )
 
         startup_only_schedule_keys = submitted_keys & {
-            "SCHEDULE_ENABLED",
             "SCHEDULE_RUN_IMMEDIATELY",
         }
         if startup_only_schedule_keys:
@@ -1551,6 +1563,28 @@ class SystemConfigService:
                     f"{', '.join(sorted(startup_only_schedule_keys))} 已写入 .env。"
                     "这些属于启动期调度模式配置：当前已运行的 WebUI/API 进程不会因为本次保存启动、"
                     "停止或重建 scheduler；请重启当前进程，并以 schedule 模式重新启动后生效。"
+                )
+            )
+
+        if "SCHEDULE_ENABLED" in submitted_keys:
+            schedule_enabled = (current_map.get("SCHEDULE_ENABLED", "false") or "false").strip().lower()
+            warnings.append(
+                (
+                    f"SCHEDULE_ENABLED={schedule_enabled} 已写入 .env。"
+                    "如果当前进程是 WebUI/API/Desktop 长运行进程，runtime scheduler 会按新配置启停；"
+                    "CLI schedule 模式仍按启动参数和配置运行。"
+                )
+            )
+
+        if "SCHEDULE_TIMES" in submitted_keys:
+            schedule_times = (current_map.get("SCHEDULE_TIMES", "") or "").strip()
+            schedule_time = (current_map.get("SCHEDULE_TIME", "") or "").strip() or "18:00"
+            effective = schedule_times or schedule_time
+            warnings.append(
+                (
+                    f"SCHEDULE_TIMES={effective} 已写入 .env。"
+                    "有效时间点会去重、排序；为空时继续使用 SCHEDULE_TIME。"
+                    "如果当前进程存在 runtime scheduler，会按新时间重建 daily jobs。"
                 )
             )
 
@@ -1640,14 +1674,14 @@ class SystemConfigService:
 
     @staticmethod
     def _parse_imported_env_content(content: str) -> List[Dict[str, str]]:
-        """Parse raw `.env` text into update items using current dotenv semantics."""
+        """Parse raw `.env` text into update items without expanding app templates."""
         normalized_content = content.replace("\ufeff", "")
         if not normalized_content.strip():
             raise ConfigImportError("未识别到有效 .env 配置")
 
         from dotenv import dotenv_values
 
-        parsed = dotenv_values(stream=io.StringIO(normalized_content))
+        parsed = dotenv_values(stream=io.StringIO(normalized_content), interpolate=False)
         updates: List[Dict[str, str]] = []
         for key, value in parsed.items():
             if key is None:

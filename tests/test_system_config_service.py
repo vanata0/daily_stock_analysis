@@ -22,6 +22,13 @@ from src.services.system_config_service import ConfigConflictError, ConfigImport
 
 class SystemConfigServiceTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        # Isolate ambient config env vars (other tests may leak the real .env via
+        # load_dotenv) so the temp ENV_FILE is the sole config source for validation.
+        self._env_backup = dict(os.environ)
+        for key in list(os.environ):
+            if key.startswith(("LLM_", "LITELLM", "AGENT_LITELLM", "FEISHU_", "LARK_")):
+                os.environ.pop(key, None)
+
         self.temp_dir = tempfile.TemporaryDirectory()
         self.env_path = Path(self.temp_dir.name) / ".env"
         self.env_path.write_text(
@@ -44,8 +51,9 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         Config.reset_instance()
-        os.environ.pop("ENV_FILE", None)
         self.temp_dir.cleanup()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
 
     def _rewrite_env(self, *lines: str) -> None:
         self.env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

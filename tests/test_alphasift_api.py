@@ -2208,6 +2208,9 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
                 {
                     "GEMINI_API_KEY": "outer-key",
                     "SNAPSHOT_SOURCE_PRIORITY": "",
+                    # Isolate the real .env TUSHARE_TOKEN so the snapshot-source
+                    # default is resolved without the auto-injected tushare prefix.
+                    "TUSHARE_TOKEN": "",
                     "LLM_CANDIDATE_CONTEXT_ENABLED": "true",
                     "LLM_CANDIDATE_MULTIPLIER": "",
                     "LLM_MAX_CANDIDATES": "",

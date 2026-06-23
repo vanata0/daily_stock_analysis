@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -20,6 +21,22 @@ from src.repositories.portfolio_repo import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Shared realtime-quote fetcher for portfolio snapshots. Reused across positions so
+# the 9 data sources are initialized once per process instead of per symbol.
+_PORTFOLIO_FETCHER_MANAGER: Any = None
+_PORTFOLIO_FETCHER_MANAGER_LOCK = threading.Lock()
+
+
+def _get_portfolio_fetcher_manager() -> Any:
+    global _PORTFOLIO_FETCHER_MANAGER
+    if _PORTFOLIO_FETCHER_MANAGER is None:
+        with _PORTFOLIO_FETCHER_MANAGER_LOCK:
+            if _PORTFOLIO_FETCHER_MANAGER is None:
+                from data_provider.base import DataFetcherManager
+
+                _PORTFOLIO_FETCHER_MANAGER = DataFetcherManager()
+    return _PORTFOLIO_FETCHER_MANAGER
 
 PortfolioBusyError = RepoPortfolioBusyError
 
@@ -1089,9 +1106,11 @@ class PortfolioService:
     @staticmethod
     def _fetch_realtime_position_price(symbol: str) -> Tuple[Optional[float], Optional[str]]:
         try:
-            from data_provider.base import DataFetcherManager
-
-            quote = DataFetcherManager().get_realtime_quote(symbol, log_final_failure=False)
+            # Snapshot only needs the price; price_only skips the slow per-stock
+            # Tencent supplement of fields (turnover/PE/量比…) the snapshot discards.
+            quote = _get_portfolio_fetcher_manager().get_realtime_quote(
+                symbol, log_final_failure=False, price_only=True
+            )
         except Exception as exc:
             logger.warning("Failed to fetch realtime portfolio price for %s: %s", symbol, exc)
             return None, None

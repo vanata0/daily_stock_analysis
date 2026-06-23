@@ -1667,7 +1667,7 @@ class DataFetcherManager:
         setattr(quote, "is_stale", stale_seconds > int(ttl))
         return quote
     
-    def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True):
+    def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True, price_only: bool = False):
         """
         获取实时行情数据（自动故障切换）
         
@@ -1854,8 +1854,10 @@ class DataFetcherManager:
                         primary_quote = quote
                         primary_fallback_from = failed_sources[0] if failed_sources else None
                         logger.info(f"[实时行情] {stock_code} 成功获取 (来源: {source})")
-                        # If all key supplementary fields are present, return early
-                        if not self._quote_needs_supplement(primary_quote):
+                        # Price-only callers (e.g. portfolio snapshot) only need the
+                        # price, so skip the slow per-stock supplement of unused fields.
+                        # Otherwise return early only when no key fields are missing.
+                        if price_only or not self._quote_needs_supplement(primary_quote):
                             return self._enrich_realtime_quote(
                                 primary_quote,
                                 fallback_from=primary_fallback_from,

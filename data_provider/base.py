@@ -2303,6 +2303,46 @@ class DataFetcherManager:
                 )
                 logger.debug(f"[{fetcher.name}] 获取所属板块失败: {e}")
                 continue
+
+        # Tushare industry fallback: belong-board capability is efinance-only and
+        # easily rate-limited by East Money, so fall back to Tushare
+        # stock_basic.industry to keep sector classification working instead of
+        # dropping the stock to UNCLASSIFIED.
+        tushare = self._get_fetcher_by_name("TushareFetcher")
+        if tushare is not None and hasattr(tushare, "get_industry"):
+            start = time.time()
+            record_provider_run_started(
+                data_type="belong_boards",
+                provider=tushare.name,
+                operation="get_industry_fallback",
+            )
+            try:
+                industry = tushare.get_industry(stock_code)
+            except Exception as e:
+                error_type, error_reason = summarize_exception(e)
+                record_provider_run(
+                    data_type="belong_boards",
+                    provider=tushare.name,
+                    operation="get_industry_fallback",
+                    success=False,
+                    latency_ms=int((time.time() - start) * 1000),
+                    error_type=error_type,
+                    error_message=error_reason,
+                )
+                logger.debug(f"[{tushare.name}] 所属行业兜底失败 {stock_code}: {e}")
+                industry = None
+            if industry:
+                record_provider_run(
+                    data_type="belong_boards",
+                    provider=tushare.name,
+                    operation="get_industry_fallback",
+                    success=True,
+                    latency_ms=int((time.time() - start) * 1000),
+                    record_count=1,
+                )
+                logger.info(f"[{tushare.name}] 所属板块兜底(行业): {stock_code} -> {industry}")
+                return [{"name": str(industry).strip(), "type": "industry"}]
+
         return []
 
     def prefetch_stock_names(self, stock_codes: List[str], use_bulk: bool = False) -> None:

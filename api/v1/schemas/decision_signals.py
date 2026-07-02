@@ -16,7 +16,7 @@ DecisionSignalSourceType = Literal["analysis", "agent", "alert", "market_review"
 DecisionSignalStatus = Literal["active", "expired", "invalidated", "closed", "archived"]
 DecisionSignalPlanQuality = Literal["complete", "partial", "minimal", "unknown"]
 DecisionSignalHorizon = Literal["intraday", "1d", "3d", "5d", "10d", "swing", "long"]
-DecisionSignalMarket = Literal["cn", "hk", "us", "jp", "kr"]
+DecisionSignalMarket = Literal["cn", "hk", "us", "jp", "kr", "tw"]
 DecisionSignalOutcomeStatus = Literal["completed", "unable"]
 DecisionSignalOutcomeValue = Literal["hit", "miss", "neutral"]
 DecisionSignalFeedbackValue = Literal["useful", "not_useful"]
@@ -53,7 +53,7 @@ class DecisionSignalCreateRequest(BaseModel):
     status: Optional[DecisionSignalStatus] = None
     expires_at: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
-    report_language: Optional[Literal["zh", "en"]] = None
+    report_language: Optional[Literal["zh", "en", "ko"]] = None
 
 
 class DecisionSignalStatusUpdateRequest(BaseModel):

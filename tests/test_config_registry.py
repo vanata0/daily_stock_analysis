@@ -192,11 +192,19 @@ class TestGenerationBackendFieldsRegistered(unittest.TestCase):
             self.assertEqual(field["category"], "ai_model")
             self.assertEqual(field["ui_control"], "select")
             self.assertEqual(field["default_value"], "litellm")
-            self.assertEqual(field["validation"], {"enum": ["litellm"]})
-            self.assertEqual(
-                field["options"],
-                [{"label": "Default model settings", "value": "litellm"}],
-            )
+            if key == "GENERATION_BACKEND":
+                self.assertEqual(
+                    field["validation"],
+                    {"enum": ["litellm", "codex_cli", "claude_code_cli", "opencode_cli"]},
+                )
+                self.assertIn({"label": "Default model settings", "value": "litellm"}, field["options"])
+                self.assertIn({"label": "Codex CLI (experimental)", "value": "codex_cli"}, field["options"])
+                self.assertIn({"label": "Claude Code CLI (experimental)", "value": "claude_code_cli"}, field["options"])
+                self.assertIn({"label": "OpenCode CLI (experimental)", "value": "opencode_cli"}, field["options"])
+            else:
+                self.assertEqual(field["validation"], {"enum": ["", "litellm"]})
+                self.assertIn({"label": "Disabled", "value": ""}, field["options"])
+                self.assertIn({"label": "Default model settings", "value": "litellm"}, field["options"])
             self.assertEqual(field["help_key"], help_key)
             self.assertNotEqual(field["display_order"], 9000)
 
@@ -211,16 +219,27 @@ class TestGenerationBackendFieldsRegistered(unittest.TestCase):
             field["options"],
             [
                 {"label": "Auto", "value": "auto"},
-                {"label": "Default model tool calling", "value": "litellm"},
+                {"label": "Default model settings", "value": "litellm"},
             ],
         )
         self.assertEqual(field["help_key"], "settings.agent.AGENT_GENERATION_BACKEND")
         self.assertNotEqual(field["display_order"], 9000)
 
+    def test_generation_backend_numeric_fields_have_upper_bounds(self):
+        expected = {
+            "GENERATION_BACKEND_TIMEOUT_SECONDS": {"min": 1, "max": 3600},
+            "GENERATION_BACKEND_MAX_OUTPUT_BYTES": {"min": 1, "max": 33554432},
+            "GENERATION_BACKEND_MAX_CONCURRENCY": {"min": 1, "max": 16},
+            "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": {"min": 1, "max": 4},
+        }
+
+        for key, validation in expected.items():
+            self.assertEqual(get_field_definition(key)["validation"], validation)
+
     def test_schema_response_groups_generation_backend_fields(self):
         schema = build_schema_response()
         self.assertEqual(schema["schema_version"], SCHEMA_VERSION)
-        self.assertEqual(SCHEMA_VERSION, "2026-06-22")
+        self.assertEqual(SCHEMA_VERSION, "2026-06-29-claude-code-cli-backend")
 
         categories = {
             category["category"]: {field["key"] for field in category["fields"]}
@@ -229,6 +248,10 @@ class TestGenerationBackendFieldsRegistered(unittest.TestCase):
 
         self.assertIn("GENERATION_BACKEND", categories["ai_model"])
         self.assertIn("GENERATION_FALLBACK_BACKEND", categories["ai_model"])
+        self.assertIn("GENERATION_BACKEND_TIMEOUT_SECONDS", categories["ai_model"])
+        self.assertIn("GENERATION_BACKEND_MAX_OUTPUT_BYTES", categories["ai_model"])
+        self.assertIn("GENERATION_BACKEND_MAX_CONCURRENCY", categories["ai_model"])
+        self.assertIn("LOCAL_CLI_BACKEND_MAX_CONCURRENCY", categories["ai_model"])
         self.assertIn("AGENT_GENERATION_BACKEND", categories["agent"])
 
 
@@ -760,6 +783,22 @@ class TestMarketReviewFieldsRegistered(unittest.TestCase):
         self.assertEqual(field["validation"]["enum"], ["green_up", "red_up"])
         self.assertFalse(field["is_sensitive"])
 
+    def test_market_review_region_field_definition_exists(self):
+        field = get_field_definition("MARKET_REVIEW_REGION")
+        self.assertEqual(field["category"], "system")
+        self.assertEqual(field["data_type"], "string")
+        self.assertEqual(field["ui_control"], "text")
+        self.assertEqual(field["default_value"], "cn")
+        self.assertEqual(
+            field["validation"]["allowed_values"],
+            ["cn", "hk", "us", "jp", "kr", "both"],
+        )
+        self.assertEqual(
+            field["validation"]["delimiter"],
+            ",",
+        )
+        self.assertFalse(field["is_sensitive"])
+
     def test_daily_market_context_field_definition_exists(self):
         field = get_field_definition("DAILY_MARKET_CONTEXT_ENABLED")
         self.assertEqual(field["category"], "system")
@@ -775,6 +814,7 @@ class TestMarketReviewFieldsRegistered(unittest.TestCase):
         field_keys = {f["key"] for f in system_cat["fields"]}
         self.assertIn("MARKET_REVIEW_COLOR_SCHEME", field_keys)
         self.assertIn("DAILY_MARKET_CONTEXT_ENABLED", field_keys)
+        self.assertIn("MARKET_REVIEW_REGION", field_keys)
 
 
 if __name__ == "__main__":

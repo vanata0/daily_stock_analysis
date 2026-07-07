@@ -76,6 +76,7 @@ def normalize_stock_code(stock_code: str) -> str:
     - 'SH600519'    -> '600519'   (strip SH prefix)
     - 'SH.600519'   -> '600519'   (strip SH. prefix)
     - 'SZ000001'    -> '000001'   (strip SZ prefix)
+    - 'SS600519'    -> '600519'   (strip legacy Yahoo Shanghai prefix)
     - 'SZ.000001'   -> '000001'   (strip SZ. prefix)
     - 'BJ920748'    -> '920748'   (strip BJ prefix, BSE)
     - 'BJ.920748'   -> '920748'   (strip BJ. prefix, BSE)
@@ -103,15 +104,15 @@ def normalize_stock_code(stock_code: str) -> str:
         if candidate.isdigit() and 1 <= len(candidate) <= 5:
             return f"HK{candidate.zfill(5)}"
 
-    # Strip SH/SZ prefix (e.g. SH600519 -> 600519)
-    if upper.startswith(('SH', 'SZ')) and not upper.startswith('SH.') and not upper.startswith('SZ.'):
+    # Strip SH/SZ/SS prefix (e.g. SH600519 -> 600519, SS600519 -> 600519)
+    if upper.startswith(('SH', 'SZ', 'SS')) and not upper.startswith(('SH.', 'SZ.', 'SS.')):
         candidate = code[2:]
         # Only strip if the remainder looks like a valid numeric code
         if candidate.isdigit() and len(candidate) in (5, 6):
             return candidate
 
-    # Strip dotted SH/SZ prefix (e.g. SH.600519 -> 600519)
-    if upper.startswith(('SH.', 'SZ.')):
+    # Strip dotted SH/SZ/SS prefix (e.g. SH.600519 -> 600519)
+    if upper.startswith(('SH.', 'SZ.', 'SS.')):
         candidate = code[3:]
         if candidate.isdigit() and len(candidate) in (5, 6):
             return candidate

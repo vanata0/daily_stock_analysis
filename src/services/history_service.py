@@ -608,6 +608,9 @@ class HistoryService:
             explicit_action=raw.get("action"),
             report_type=getattr(record, "report_type", None),
             report_language=normalize_report_language(raw.get("report_language")),
+            sentiment_score=getattr(record, "sentiment_score", None),
+            guardrail_reason=raw.get("guardrail_reason") or raw.get("downgrade_reason"),
+            align_with_score=True,
         )
 
     def delete_history_records(self, record_ids: List[int]) -> int:

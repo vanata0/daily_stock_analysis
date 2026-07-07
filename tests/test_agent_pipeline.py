@@ -583,6 +583,7 @@ class TestAgentResultConversion(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = False
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_config.return_value = mock_cfg
 
             from src.core.pipeline import StockAnalysisPipeline
@@ -1522,6 +1523,7 @@ class TestPipelineRouting(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = False
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_config.return_value = mock_cfg
 
             from src.core.pipeline import StockAnalysisPipeline
@@ -1568,6 +1570,7 @@ class TestPipelineRouting(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = False
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_config.return_value = mock_cfg
 
             from src.core.pipeline import StockAnalysisPipeline
@@ -1615,6 +1618,7 @@ class TestPipelineRouting(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = False
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_config.return_value = mock_cfg
 
             from src.core.pipeline import StockAnalysisPipeline
@@ -1661,6 +1665,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = False
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_config.return_value = mock_cfg
 
             from src.core.pipeline import StockAnalysisPipeline
@@ -1738,6 +1743,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = False
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_cfg.report_language = "zh"
             mock_cfg.agent_orchestrator_timeout_s = 600
             mock_config.return_value = mock_cfg
@@ -1830,6 +1836,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = False
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_cfg.report_language = "zh"
             mock_cfg.report_integrity_enabled = True
             mock_cfg.agent_orchestrator_timeout_s = 600
@@ -1935,6 +1942,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = False
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_cfg.report_language = "zh"
             mock_cfg.report_integrity_enabled = False
             mock_cfg.agent_orchestrator_timeout_s = 600
@@ -2014,6 +2022,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = True
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_cfg.report_language = "zh"
             mock_cfg.report_integrity_enabled = False
             mock_config.return_value = mock_cfg
@@ -2785,6 +2794,7 @@ class TestSafeInt(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = False
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_config.return_value = mock_cfg
 
             from src.core.pipeline import StockAnalysisPipeline
@@ -2928,6 +2938,7 @@ class TestSkillActivation(unittest.TestCase):
             mock_cfg.enable_chip_distribution = True
             mock_cfg.realtime_source_priority = []
             mock_cfg.save_context_snapshot = False
+            mock_cfg.news_intel_auto_fetch_enabled = False
             mock_config.return_value = mock_cfg
 
             from src.core.pipeline import StockAnalysisPipeline

@@ -2035,10 +2035,13 @@ class StockAnalysisPipeline:
     ) -> AnalysisResult:
         previous_advice = str(previous_operation_advice or "").strip()
         current_advice = str(getattr(result, "operation_advice", None) or "").strip()
+        explicit_action = current_advice if previous_advice != current_advice else None
         return populate_decision_action_fields(
             result,
+            explicit_action=explicit_action,
             report_type=report_type,
             use_existing_action=(previous_advice == current_advice),
+            align_with_score=(previous_advice == current_advice),
         )
 
     @staticmethod
@@ -2633,7 +2636,8 @@ class StockAnalysisPipeline:
     ) -> Optional[str]:
         """Load locally persisted intelligence as fail-open evidence context."""
         try:
-            service = IntelligenceService()
+            service = IntelligenceService(config=self.config)
+            service.refresh_auto_sources()
             days = max(1, int(self.config.get_effective_news_window_days() or 1))
             collected: list[Dict[str, Any]] = []
             seen_urls: set[str] = set()
@@ -3494,9 +3498,18 @@ class StockAnalysisPipeline:
                     if channel == NotificationChannel.WECHAT:
                         continue
                     if channel == NotificationChannel.FEISHU:
+                        def _send_feishu_report() -> bool:
+                            if getattr(self.notifier, "_feishu_send_as_file", False):
+                                date_str = datetime.now().strftime('%Y%m%d')
+                                filepath = self.notifier.save_report_to_file(
+                                    report, filename=f"dashboard_{date_str}.md"
+                                )
+                                return self.notifier.send_feishu_file(filepath)
+                            return self.notifier.send_to_feishu(report)
+
                         channel_success, channel_error = _send_channel_safely(
                             channel.value,
-                            lambda: self.notifier.send_to_feishu(report),
+                            _send_feishu_report,
                         )
                         non_wechat_success = channel_success or non_wechat_success
                         _record_channel_result(

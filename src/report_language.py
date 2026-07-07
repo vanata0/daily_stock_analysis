@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional
 
+from src.schemas.decision_scale import signal_key_for_score
+
 SUPPORTED_REPORT_LANGUAGES = ("zh", "en", "ko")
 
 _REPORT_LANGUAGE_ALIASES = {
@@ -969,15 +971,14 @@ def get_signal_level(advice: Any, score: Any, language: Optional[str]) -> tuple[
     except (TypeError, ValueError):
         numeric_score = 50
 
-    if numeric_score >= 80:
+    score_signal = signal_key_for_score(numeric_score)
+    if score_signal == "strong_buy":
         return (_OPERATION_ADVICE_TRANSLATIONS["strong_buy"][normalized_language], "💚", "strong_buy")
-    if numeric_score >= 65:
+    if score_signal == "buy":
         return (_OPERATION_ADVICE_TRANSLATIONS["buy"][normalized_language], "🟢", "buy")
-    if numeric_score >= 55:
-        return (_OPERATION_ADVICE_TRANSLATIONS["hold"][normalized_language], "🟡", "hold")
-    if numeric_score >= 45:
+    if score_signal == "watch":
         return (_OPERATION_ADVICE_TRANSLATIONS["watch"][normalized_language], "⚪", "watch")
-    if numeric_score >= 35:
+    if score_signal == "reduce":
         return (_OPERATION_ADVICE_TRANSLATIONS["reduce"][normalized_language], "🟠", "reduce")
     return (_OPERATION_ADVICE_TRANSLATIONS["sell"][normalized_language], "🔴", "sell")
 

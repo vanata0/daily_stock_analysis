@@ -59,6 +59,7 @@ from src.utils.data_processing import (
 from src.notification_sender import (
     AstrbotSender,
     CustomWebhookSender,
+    DingtalkSender,
     DiscordSender,
     EmailSender,
     FeishuSender,
@@ -104,6 +105,7 @@ if TYPE_CHECKING:
 class NotificationChannel(Enum):
     """通知渠道类型"""
     WECHAT = "wechat"      # 企业微信
+    DINGTALK = "dingtalk"
     FEISHU = "feishu"      # 飞书
     TELEGRAM = "telegram"  # Telegram
     EMAIL = "email"        # 邮件
@@ -155,6 +157,7 @@ class ChannelDetector:
         names = {
             NotificationChannel.WECHAT: "企业微信",
             NotificationChannel.FEISHU: "飞书",
+            NotificationChannel.DINGTALK: "钉钉",
             NotificationChannel.TELEGRAM: "Telegram",
             NotificationChannel.EMAIL: "邮件",
             NotificationChannel.PUSHOVER: "Pushover",
@@ -174,6 +177,7 @@ class ChannelDetector:
 class NotificationService(
     AstrbotSender,
     CustomWebhookSender,
+    DingtalkSender,
     DiscordSender,
     EmailSender,
     FeishuSender,
@@ -242,6 +246,7 @@ class NotificationService(
         SlackSender.__init__(self, config)
         TelegramSender.__init__(self, config)
         WechatSender.__init__(self, config)
+        DingtalkSender.__init__(self, config)
 
         # 检测所有已配置的渠道
         self._available_channels = self._detect_all_channels()
@@ -395,6 +400,8 @@ class NotificationService(
 
         if getattr(config, "wechat_webhook_url", None):
             channels.append(NotificationChannel.WECHAT)
+        if getattr(config, "dingtalk_webhook_url", None):
+            channels.append(NotificationChannel.DINGTALK)    
 
         if is_feishu_static_configured(config):
             channels.append(NotificationChannel.FEISHU)
@@ -2388,6 +2395,7 @@ class NotificationService(
         image_bytes: Optional[bytes],
         email_stock_codes: Optional[List[str]],
         email_send_to_all: bool,
+        route_type: Optional[str] = None,
     ) -> bool:
         use_image = self._should_use_image_for_channel(channel, image_bytes)
         if channel == NotificationChannel.WECHAT:
@@ -2395,7 +2403,15 @@ class NotificationService(
                 return self._send_wechat_image(image_bytes)
             return self.send_to_wechat(content)
         if channel == NotificationChannel.FEISHU:
+            if getattr(self, "_feishu_send_as_file", False) and route_type == "report":
+                date_str = datetime.now().strftime('%Y%m%d')
+                filepath = self.save_report_to_file(
+                    content, filename=f"report_{date_str}.md"
+                )
+                return self.send_feishu_file(filepath)
             return self.send_to_feishu(content)
+        if channel == NotificationChannel.DINGTALK:
+            return self.send_to_dingtalk(content)
         if channel == NotificationChannel.TELEGRAM:
             if use_image:
                 return self._send_telegram_photo(image_bytes)
@@ -2595,6 +2611,7 @@ class NotificationService(
                     image_bytes=image_bytes,
                     email_stock_codes=email_stock_codes,
                     email_send_to_all=email_send_to_all,
+                    route_type=route_type,
                 )
                 latency_ms = int((time.monotonic() - started_at) * 1000)
 
@@ -2706,6 +2723,28 @@ class NotificationService(
 
         logger.info(f"日报已保存到: {filepath}")
         return str(filepath)
+
+    def save_and_send_feishu_file(
+        self,
+        content: str,
+        filename: Optional[str] = None,
+    ) -> bool:
+        """
+        Save report content to a local markdown file and upload it to Feishu.
+
+        This is a convenience wrapper around :meth:`save_report_to_file` +
+        :meth:`send_feishu_file`.
+
+        Args:
+            content: Report content (Markdown).
+            filename: Optional file name; auto-generated from date when omitted.
+
+        Returns:
+            Whether the Feishu file upload succeeded.
+        """
+        filepath = self.save_report_to_file(content, filename=filename)
+        logger.info("将上传文件到飞书: %s", filepath)
+        return self.send_feishu_file(filepath)
 
 
 class NotificationBuilder:

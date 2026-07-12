@@ -88,6 +88,7 @@ def _make_orchestrator(mode: str = "standard") -> AgentOrchestrator:
     inst.llm_adapter = MagicMock()
     inst.skill_instructions = None
     inst.technical_skill_policy = None
+    inst.config = None
     inst._skill_agent_names = set()
     return inst
 

@@ -606,6 +606,7 @@ class AgentOrchestrator:
                     })
                 if intel_result.status == StageStatus.FAILED:
                     # intel is non-critical — degrade gracefully
+                    self._record_degraded_stage(ctx, agents[1].agent_name, intel_result)
                     logger.warning(
                         "[Orchestrator] non-critical stage 'intel' failed: %s",
                         intel_result.error,

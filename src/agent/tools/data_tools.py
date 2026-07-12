@@ -41,6 +41,11 @@ _PORTFOLIO_READ_POLICY = ToolPolicy.declared(
     side_effects=["db_read"],
     permissions=["portfolio:read"],
 )
+_MARKET_WIDE_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["network_read"],
+    permissions=["market_data:read"],
+)
 
 _fetcher_manager_singleton = None
 _fetcher_manager_lock = Lock()
@@ -754,6 +759,7 @@ get_northbound_flow_tool = ToolDefinition(
     parameters=[],
     handler=_handle_get_northbound_flow,
     category="data",
+    policy=_MARKET_WIDE_READ_POLICY,
 )
 
 ALL_DATA_TOOLS.append(get_northbound_flow_tool)
@@ -799,6 +805,7 @@ get_margin_trading_tool = ToolDefinition(
     ],
     handler=_handle_get_margin_trading,
     category="data",
+    policy=_MARKET_DATA_STOCK_POLICY,
 )
 
 ALL_DATA_TOOLS.append(get_margin_trading_tool)
@@ -844,6 +851,7 @@ get_research_reports_tool = ToolDefinition(
     ],
     handler=_handle_get_research_reports,
     category="data",
+    policy=_MARKET_DATA_STOCK_POLICY,
 )
 
 ALL_DATA_TOOLS.append(get_research_reports_tool)

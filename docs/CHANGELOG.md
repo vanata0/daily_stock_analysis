@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] `SystemConfigService.update` 的 `_reload_runtime_singletons` 异常会阻断 `setup_env(override=True)` 执行，修复 WebUI 保存配置后进程环境变量残留旧值的问题。
 - [修复] `requirements.txt` 含中文注释导致 ASCII 解码测试失败，替换为英文注释。
 - [测试] 修复 `test_data_tools_get_capital_flow.py` Dummy Manager 缺少 `**_kwargs` 导致误判为 error 状态。
+- [修复] AlphaSift 选股 LLM 重排在候选池接近上限时，思考型模型（如 deepseek-v4-flash）的 reasoning_content 会耗尽默认 2048 的 `LLM_MAX_TOKENS` 预算导致正文为空、JSON 解析失败（`no_json_found`）并整体降级为本地 `screen_score` 排序；DSA 现在未显式配置该变量时默认注入 `LLM_MAX_TOKENS=8192`，可通过 `.env` 覆盖。
 
 - [新功能] 接入迈瑞数据（Mairuiapi）个股资金流向接口，支持特大/大/中/小单四档明细，作为东财 AkShare 的优先数据源；通过 `MAIRUI_API_KEY` 启用，未配置时自动 fallback 到原有东财接口。
 - [改进] AlphaSift 选股入口在 Web 侧边栏中移动到”问股”下方，贴近 Agent/研究辅助工作流。

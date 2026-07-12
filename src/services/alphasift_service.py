@@ -40,6 +40,12 @@ DSA_ENRICHMENT_MAX_CANDIDATES = 3
 DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES = 3
 DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER = 2
 DSA_ALPHASIFT_LLM_MAX_CANDIDATES = 12
+# AlphaSift 默认 max_tokens=2048；但 DSA 选股常用的思考型模型（如 deepseek-v4-flash）会把
+# reasoning_content 计入同一 completion token 预算。候选池接近 DSA_ALPHASIFT_LLM_MAX_CANDIDATES
+# 且排序 schema 字段较多时，思考阶段可能耗尽全部预算，导致正文 content 为空、JSON 解析失败
+# 并整体降级为 screen_score 排序。复测同规模候选池实际需要约 3400 tokens 才能思考完并输出完整
+# JSON，这里预留安全余量。
+DSA_ALPHASIFT_LLM_MAX_TOKENS = 8192
 DSA_ALPHASIFT_DAILY_FETCH_RETRIES = 3
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY = "sina,efinance,akshare_em,em_datacenter"
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE = "tushare,sina,efinance,akshare_em,em_datacenter"
@@ -1960,6 +1966,7 @@ def _build_alphasift_runtime_env(config: Config, *, max_results: Optional[int] =
     put_default("DAILY_FETCH_RETRIES", str(DSA_ALPHASIFT_DAILY_FETCH_RETRIES))
     put_default("DAILY_FETCH_MAX_WORKERS", "1")
     put("LLM_CANDIDATE_CONTEXT_ENABLED", "false")
+    put_default("LLM_MAX_TOKENS", str(DSA_ALPHASIFT_LLM_MAX_TOKENS))
     put_default("LLM_CANDIDATE_CONTEXT_PROVIDERS", DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS)
     put_default("LLM_CANDIDATE_MULTIPLIER", str(DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER))
     put_default("LLM_MAX_CANDIDATES", str(_resolve_dsa_llm_max_candidates(max_results)))

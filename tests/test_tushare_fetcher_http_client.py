@@ -20,7 +20,11 @@ except ValueError:
 if not json_repair_available and "json_repair" not in sys.modules:
     sys.modules["json_repair"] = MagicMock()
 
-from data_provider.tushare_fetcher import TushareFetcher, _TushareHttpClient
+from data_provider.tushare_fetcher import (
+    TushareFetcher,
+    _TushareHttpClient,
+    _resolve_tushare_api_url,
+)
 
 
 class TestTushareHttpClient(unittest.TestCase):
@@ -73,6 +77,50 @@ class TestTushareFetcherInit(unittest.TestCase):
         self.assertIsInstance(fetcher._api, _TushareHttpClient)
         self.assertTrue(fetcher.is_available())
         self.assertEqual(fetcher.priority, -1)
+
+    def test_init_uses_custom_api_url_when_configured(self) -> None:
+        config = SimpleNamespace(
+            tushare_token="demo-token",
+            tushare_api_url="http://proxy.internal:8020/",
+        )
+
+        with patch("data_provider.tushare_fetcher.get_config", return_value=config):
+            fetcher = TushareFetcher()
+
+        self.assertIsInstance(fetcher._api, _TushareHttpClient)
+        self.assertEqual(fetcher._api._api_url, "http://proxy.internal:8020/")
+
+    def test_init_falls_back_to_default_when_api_url_invalid(self) -> None:
+        """非法 TUSHARE_API_URL（缺少 http(s):// 前缀）应导致数据源不可用而不是崩溃。"""
+        config = SimpleNamespace(
+            tushare_token="demo-token",
+            tushare_api_url="proxy.internal:8020",
+        )
+
+        with patch("data_provider.tushare_fetcher.get_config", return_value=config):
+            fetcher = TushareFetcher()
+
+        self.assertIsNone(fetcher._api)
+        self.assertFalse(fetcher.is_available())
+
+
+class TestResolveTushareApiUrl(unittest.TestCase):
+    """Ensure TUSHARE_API_URL validation matches documented semantics."""
+
+    def test_none_or_blank_falls_back_to_official_default(self) -> None:
+        self.assertEqual(_resolve_tushare_api_url(None), "http://api.tushare.pro")
+        self.assertEqual(_resolve_tushare_api_url(""), "http://api.tushare.pro")
+        self.assertEqual(_resolve_tushare_api_url("   "), "http://api.tushare.pro")
+
+    def test_valid_url_is_stripped_and_preserved(self) -> None:
+        self.assertEqual(
+            _resolve_tushare_api_url("  https://proxy.internal:8020/  "),
+            "https://proxy.internal:8020/",
+        )
+
+    def test_missing_scheme_raises_value_error(self) -> None:
+        with self.assertRaises(ValueError):
+            _resolve_tushare_api_url("proxy.internal:8020")
 
 
 if __name__ == "__main__":

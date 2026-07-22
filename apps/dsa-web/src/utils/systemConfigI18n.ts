@@ -218,7 +218,7 @@ const fieldTitleMap: Record<string, string> = {
 const fieldDescriptionMap: Record<string, string> = {
   STOCK_LIST: '推荐使用英文逗号分隔股票代码；中文逗号、顿号、分号、空格和换行会在保存后规范为英文逗号。',
   TUSHARE_TOKEN: '用于接入 Tushare Pro 数据服务的凭据。',
-  TUSHARE_API_URL: 'Tushare Pro API 请求地址，默认官方节点；网络受限时可填代理 URL。',
+  TUSHARE_API_URL: 'Tushare Pro API 请求地址，默认官方节点；网络受限时可填代理 URL，必须以 http:// 或 https:// 开头。',
   BOCHA_API_KEYS: '用于新闻检索的 Bocha 密钥，支持逗号分隔多个（最高优先级）。',
   TAVILY_API_KEYS: '用于新闻检索的 Tavily 密钥，支持逗号分隔多个。',
   ANSPIRE_API_KEYS: 'Anspire Open 密钥，支持逗号分隔多个；默认同时用于大模型网关和新闻检索。',

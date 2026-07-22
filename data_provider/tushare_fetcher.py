@@ -72,6 +72,29 @@ def _is_us_code(stock_code: str) -> bool:
     return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
 
 
+_TUSHARE_DEFAULT_API_URL = "http://api.tushare.pro"
+
+
+def _resolve_tushare_api_url(raw: Optional[str]) -> str:
+    """校验 ``TUSHARE_API_URL`` / config.tushare_api_url 并返回可用地址。
+
+    - 留空 / 仅空白 / 未设置 → 返回官方默认地址。
+    - 设置则去掉首尾空白后返回，并校验必须是 ``http://`` 或 ``https://``
+      前缀，避免误填成纯主机名（如 ``api.tushare.pro``）导致请求失败。
+    """
+    if not raw:
+        return _TUSHARE_DEFAULT_API_URL
+    url = raw.strip()
+    if not url:
+        return _TUSHARE_DEFAULT_API_URL
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError(
+            "TUSHARE_API_URL 必须以 http:// 或 https:// 开头，"
+            f"当前值为 {url!r}"
+        )
+    return url
+
+
 class _TushareHttpClient:
     """Lightweight Tushare Pro client that does not require the tushare SDK."""
 
@@ -177,8 +200,12 @@ class TushareFetcher(BaseFetcher):
 
         The project already normalizes all Pro calls through the same request
         contract, so we do not need the official tushare SDK during runtime.
+
+        支持通过 ``TUSHARE_API_URL`` 环境变量（Web 设置页可编辑）将请求指向
+        自建或第三方兼容端点，便于网络无法直达 ``api.tushare.pro`` 时切换
+        镜像/网关。留空或不设置则保持官方默认地址，行为与历史版本一致。
         """
-        api_url = getattr(get_config(), "tushare_api_url", None) or "http://api.tushare.pro"
+        api_url = _resolve_tushare_api_url(getattr(get_config(), "tushare_api_url", None))
         client = _TushareHttpClient(token=token, api_url=api_url)
         logger.debug("Tushare API client configured, endpoint: %s", api_url)
         return client

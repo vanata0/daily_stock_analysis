@@ -784,7 +784,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "TUSHARE_API_URL": {
         "title": "Tushare API URL",
-        "description": "Tushare Pro API endpoint. Use the default or set a proxy/mirror URL.",
+        "description": "Tushare Pro API endpoint. Must start with http:// or https://; use the default or set a proxy/mirror URL.",
         "category": "data_source",
         "data_type": "string",
         "ui_control": "text",
@@ -793,7 +793,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_editable": True,
         "default_value": "http://api.tushare.pro",
         "options": [],
-        "validation": {},
+        "validation": {"pattern": r"^https?://.+$"},
         "display_order": 11,
     },
     "TICKFLOW_API_KEY": {

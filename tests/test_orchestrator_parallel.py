@@ -90,6 +90,7 @@ def _make_orchestrator(mode: str = "standard") -> AgentOrchestrator:
     inst.technical_skill_policy = None
     inst.config = None
     inst._skill_agent_names = set()
+    inst.strategy_engine = _orch_mod.StrategyEngine()
     return inst
 
 

@@ -122,6 +122,47 @@ class TestResolveTushareApiUrl(unittest.TestCase):
         with self.assertRaises(ValueError):
             _resolve_tushare_api_url("proxy.internal:8020")
 
+    def test_query_posts_to_custom_endpoint(self) -> None:
+        """端到端确保 TUSHARE_API_URL 真正驱动 requests.post 的目标地址。"""
+        config = SimpleNamespace(
+            tushare_token="demo-token",
+            tushare_api_url="http://gw.example.com/tushare",
+        )
+
+        with patch("data_provider.tushare_fetcher.get_config", return_value=config):
+            fetcher = TushareFetcher()
+
+        response = MagicMock(
+            status_code=200,
+            text=json.dumps(
+                {
+                    "code": 0,
+                    "data": {
+                        "fields": ["ts_code", "close"],
+                        "items": [["600519.SH", 1688.0]],
+                    },
+                }
+            ),
+        )
+
+        with patch("data_provider.tushare_fetcher.requests.post", return_value=response) as post_mock:
+            fetcher._api.daily(ts_code="600519.SH", start_date="20260320", end_date="20260325")
+
+        post_mock.assert_called_once_with(
+            "http://gw.example.com/tushare",
+            json={
+                "api_name": "daily",
+                "token": "demo-token",
+                "params": {
+                    "ts_code": "600519.SH",
+                    "start_date": "20260320",
+                    "end_date": "20260325",
+                },
+                "fields": "",
+            },
+            timeout=30,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

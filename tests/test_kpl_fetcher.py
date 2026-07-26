@@ -160,6 +160,108 @@ class TestKplFetcherNormalize(unittest.TestCase):
         self.assertEqual(self.df.iloc[-1]["code"], "600519")
 
 
+class TestKplFetcherRealtimeQuote(unittest.TestCase):
+    """实时行情映射 —— KPL 置于最高优先级，字段错了会直接污染全局。"""
+
+    # 取自 /orderbook/600519 实测（2026-07-24）
+    ORDERBOOK = {
+        "code": "600519", "name": "贵州茅台", "trade_date": "20260724",
+        "preclose": 1292.01, "open": 1305, "high": 1309.21, "low": 1286.2,
+        "last": 1297.41, "change": 5.4, "change_pct": 0.42, "amplitude": 1.78,
+        "turnover_ratio": 0.29, "vol_ratio": 0.52, "amount_wan": 35698,
+        "turnover": 4622242878, "avg_px": 1294.785, "entrust_rate": -36.88,
+        "up_limit": 1421.21, "down_limit": 1162.81,
+        "pe": 14.89, "ttm_pe": 19.6, "jt_pe": 19.7, "pb": 6.87,
+        "circ_mv": 1621868369953, "total_mv": 1621868369953,
+    }
+
+    def _quote(self, overrides=None, valid=True):
+        payload = dict(self.ORDERBOOK)
+        if overrides:
+            payload.update(overrides)
+        c = MagicMock()
+        c.is_credential_valid.return_value = valid
+        c.get.return_value = payload
+        return KplFetcher(client=c).get_realtime_quote("600519")
+
+    def test_core_price_fields_mapped(self) -> None:
+        q = self._quote()
+        self.assertEqual(q.price, 1297.41)
+        self.assertEqual(q.change_pct, 0.42)
+        self.assertEqual(q.change_amount, 5.4)
+        self.assertEqual(q.open_price, 1305)
+        self.assertEqual(q.high, 1309.21)
+        self.assertEqual(q.low, 1286.2)
+        self.assertEqual(q.pre_close, 1292.01)
+
+    def test_source_and_market_tagged(self) -> None:
+        from data_provider.realtime_types import RealtimeSource
+
+        q = self._quote()
+        self.assertEqual(q.source, RealtimeSource.KPL)
+        self.assertEqual(q.market, "cn")
+        self.assertEqual(q.name, "贵州茅台")
+
+    def test_volume_comes_from_amount_wan_as_hands(self) -> None:
+        """回归保护：orderbook 无 volume 字段。
+
+        `amount_wan` 名字像「成交额(万元)」，实测却是「成交量(手)」——它与
+        /kline/daily 的 volume 在 5 只标的上逐一相等，且
+        turnover/(amount_wan*100) 都落在当日 low~high 内。若误当成交额使用，
+        量纲会整体错乱。
+        """
+        q = self._quote()
+        self.assertEqual(q.volume, 35698 * 100)
+
+    def test_amount_uses_turnover_in_yuan(self) -> None:
+        q = self._quote()
+        self.assertEqual(q.amount, 4622242878)
+
+    def test_average_price_within_daily_range(self) -> None:
+        """量纲自洽硬判据：成交额/成交量必须落在当日价格区间内。"""
+        q = self._quote()
+        avg = q.amount / q.volume
+        self.assertGreaterEqual(avg, q.low)
+        self.assertLessEqual(avg, q.high)
+
+    def test_valuation_fields_prefer_ttm_pe(self) -> None:
+        """现有免费源常缺 PE/PB，这是 KPL 的主要增益，需优先取 TTM。"""
+        q = self._quote()
+        self.assertEqual(q.pe_ratio, 19.6)
+        self.assertEqual(q.pb_ratio, 6.87)
+        self.assertEqual(q.total_mv, 1621868369953)
+        self.assertEqual(q.circ_mv, 1621868369953)
+
+    def test_pe_falls_back_to_static_when_ttm_missing(self) -> None:
+        q = self._quote({"ttm_pe": None})
+        self.assertEqual(q.pe_ratio, 14.89)
+
+    def test_quote_satisfies_manager_acceptance_checks(self) -> None:
+        q = self._quote()
+        self.assertTrue(q.has_basic_data())
+        self.assertTrue(q.has_volume_data())
+
+    def test_unavailable_source_returns_none(self) -> None:
+        self.assertIsNone(self._quote(valid=False))
+
+    def test_invalid_price_returns_none(self) -> None:
+        """价格缺失/为零时返回 None，让上层继续降级而不是接受坏数据。"""
+        for bad in (None, 0, "", "abc"):
+            self.assertIsNone(self._quote({"last": bad}), f"应拒绝 last={bad!r}")
+
+    def test_upstream_error_returns_none(self) -> None:
+        c = MagicMock()
+        c.is_credential_valid.return_value = True
+        c.get.side_effect = KplRequestError("boom")
+        self.assertIsNone(KplFetcher(client=c).get_realtime_quote("600519"))
+
+    def test_non_a_share_code_returns_none(self) -> None:
+        c = MagicMock()
+        c.is_credential_valid.return_value = True
+        c.get.return_value = self.ORDERBOOK
+        self.assertIsNone(KplFetcher(client=c).get_realtime_quote("AAPL"))
+
+
 class TestKplFetcherRegistration(unittest.TestCase):
     """注册契约：默认关闭时不得实例化。"""
 

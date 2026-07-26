@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] KPL 数据源接入 A 股实时行情并置于最高优先级：数据取自 `/orderbook/{id}`，补齐现有免费源常缺的 PE/PB 与总/流通市值；`KPL_ENABLED=true` 时自动注入到 `REALTIME_SOURCE_PRIORITY` 首位（显式配置该变量时仍以用户配置为准），失败自动回落腾讯/AkShare/Efinance 既有链路。
 - [新功能] 新增开盘啦（KPL）数据源接入地基：`data_provider/kpl_http.py` 提供 HTTP 客户端与**凭证失效探针**，通过 `KPL_ENABLED`/`KPL_API_BASE`/`KPL_PRIORITY`/`KPL_TIMEOUT` 配置，默认关闭且关闭时完全不实例化。KPL 凭证过期时上游不报错只返回空数据，探针以交易日涨跌家数为金丝雀判据（并用节假日表排除休市误判），失效时自动停用该源并回落既有数据源，避免静默产出空数据报告。
 
 - [修复] `TUSHARE_API_URL`（Web 设置页可编辑的 Tushare 自定义接入地址）新增 `http://`/`https://` 前缀校验：非法值不再被 `_TushareHttpClient` 静默当作请求地址使用，而是在数据源初始化阶段捕获并自动降级为不可用，不影响其它数据源；Web 设置页保存时同步做格式校验，避免运行时才发现配置无效。

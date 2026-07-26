@@ -38,6 +38,7 @@ from .base import (
     normalize_stock_code,
 )
 from .kpl_http import KplError, KplHttpClient, kpl_date_to_iso
+from .realtime_types import RealtimeSource, UnifiedRealtimeQuote
 
 logger = logging.getLogger(__name__)
 
@@ -169,8 +170,84 @@ class KplFetcher(BaseFetcher):
         return df[keep]
 
     # ------------------------------------------------------------------
+    # 实时行情
+    # ------------------------------------------------------------------
+
+    def get_realtime_quote(self, stock_code: str, **_kwargs) -> Optional[UnifiedRealtimeQuote]:
+        """获取 A 股实时行情。
+
+        数据来自 /orderbook/{id}，是 KPL 单股字段最全的一条：除常规量价外
+        还带 PE/PB、总市值/流通市值、涨跌停价与五档盘口。
+
+        Returns:
+            UnifiedRealtimeQuote；不可用或数据无效时返回 None（由上层降级）
+        """
+        if not self.is_available():
+            logger.debug("[KplFetcher] 数据源不可用，跳过实时行情 %s", stock_code)
+            return None
+
+        code = normalize_stock_code(stock_code)
+        if not code or not code.isdigit() or len(code) != 6:
+            logger.debug("[KplFetcher] 实时行情仅支持 A 股 6 位代码，收到 %r", stock_code)
+            return None
+
+        try:
+            data = self._client.get(f"/orderbook/{code}")
+        except KplError as exc:
+            logger.warning("[KplFetcher] 实时行情获取失败 %s: %s", stock_code, exc)
+            return None
+
+        price = _to_float(data.get("last"))
+        if price is None or price <= 0:
+            logger.debug("[KplFetcher] %s 实时行情无有效价格，跳过", stock_code)
+            return None
+
+        # ⚠️ orderbook 没有 volume 字段；实测 amount_wan 并非「成交额(万元)」而是
+        # 「成交量(手)」——5 只标的上它与 /kline/daily 的 volume 逐一相等，且
+        # turnover/(amount_wan*100) 均落在当日 low~high 内。字段名有误导性。
+        volume_hand = _to_float(data.get("amount_wan"))
+        quote = UnifiedRealtimeQuote(
+            code=code,
+            name=str(data.get("name") or "").strip(),
+            source=RealtimeSource.KPL,
+            market="cn",
+            price=price,
+            change_pct=_to_float(data.get("change_pct")),
+            change_amount=_to_float(data.get("change")),
+            volume=int(volume_hand * _HAND_TO_SHARE) if volume_hand else None,
+            amount=_to_float(data.get("turnover")),
+            volume_ratio=_to_float(data.get("vol_ratio")),
+            turnover_rate=_to_float(data.get("turnover_ratio")),
+            amplitude=_to_float(data.get("amplitude")),
+            open_price=_to_float(data.get("open")),
+            high=_to_float(data.get("high")),
+            low=_to_float(data.get("low")),
+            pre_close=_to_float(data.get("preclose")),
+            # 优先 TTM 市盈率，缺失时退回静态市盈率
+            pe_ratio=_to_float(data.get("ttm_pe")) or _to_float(data.get("pe")),
+            pb_ratio=_to_float(data.get("pb")),
+            total_mv=_to_float(data.get("total_mv")),
+            circ_mv=_to_float(data.get("circ_mv")),
+        )
+        logger.debug(
+            "[KplFetcher] %s 实时行情: price=%s pe=%s pb=%s",
+            stock_code, quote.price, quote.pe_ratio, quote.pb_ratio,
+        )
+        return quote
+
+    # ------------------------------------------------------------------
     # 资源释放
     # ------------------------------------------------------------------
 
     def close(self) -> None:
         self._client.close()
+
+
+def _to_float(value: Any) -> Optional[float]:
+    """把上游可能给出的 str/None/空串统一成 float，无法解析返回 None。"""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

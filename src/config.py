@@ -2926,11 +2926,14 @@ class Config:
     @classmethod
     def _resolve_realtime_source_priority(cls) -> str:
         """
-        Resolve realtime source priority with automatic tushare injection.
+        Resolve realtime source priority with automatic kpl / tushare injection.
 
-        When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
-        explicitly set, automatically prepend 'tushare' to the default priority
-        so that the paid data source is utilized for realtime quotes as well.
+        When KPL or Tushare is configured but REALTIME_SOURCE_PRIORITY is not
+        explicitly set, automatically prepend those sources to the default
+        priority so the richer providers are tried first. KPL leads because its
+        orderbook endpoint carries PE/PB and market-cap fields the free sources
+        frequently omit, and it stays ahead of Tushare as the latter's proxy
+        endpoint is being retired.
         """
         explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
         default_priority = 'tencent,akshare_sina,efinance,akshare_em'
@@ -2939,15 +2942,19 @@ class Config:
             # User explicitly set priority, respect it
             return explicit
 
-        tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
-        if tushare_token:
-            # Token configured but no explicit priority override
-            # Prepend tushare so the paid source is tried first
+        injected = []
+        if parse_env_bool(os.getenv('KPL_ENABLED'), default=False):
+            injected.append('kpl')
+        if os.getenv('TUSHARE_TOKEN', '').strip():
+            injected.append('tushare')
+
+        if injected:
             import logging
             logger = logging.getLogger(__name__)
-            resolved = f'tushare,{default_priority}'
+            resolved = ','.join(injected + [default_priority])
             logger.info(
-                f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"
+                "Auto-injecting %s into realtime priority: %s",
+                '/'.join(injected), resolved,
             )
             return resolved
 

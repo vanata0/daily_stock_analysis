@@ -1939,6 +1939,16 @@ class DataFetcherManager:
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
 
+                elif source == "kpl":
+                    fetcher = self._get_fetcher_by_name("KplFetcher", capability="realtime_quote")
+                    if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
+                        record_provider_run_started(
+                            data_type="realtime_quote",
+                            provider=fetcher.name,
+                            operation="get_realtime_quote",
+                        )
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code)
+
                 provider_name = fetcher.name if fetcher is not None else source
                 
                 if quote is not None and quote.has_basic_data():

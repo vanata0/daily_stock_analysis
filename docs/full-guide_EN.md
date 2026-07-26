@@ -353,6 +353,10 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `TICKFLOW_KLINE_ADJUST` | TickFlow daily K-line adjustment mode: `none`, `forward`, `backward`, `forward_additive`, or `backward_additive`. | `none` | Optional |
 | `TICKFLOW_BATCH_DAILY_ENABLED` | Enable TickFlow batch daily K-line prefetch when the current plan supports it; permission failures are negative-cached and fall back to per-stock providers. | `true` | Optional |
 | `TICKFLOW_BATCH_SIZE` | Maximum symbols per TickFlow batch request for daily K-lines and realtime quotes. | `100` | Optional |
+| `KPL_ENABLED` | Enable the KPL (Kaipanla) data source covering realtime quotes, daily K-lines, sectors/concepts, limit-up sentiment, filings, and news. Requires a local kpl-unified-client HTTP service; the source is not instantiated at all when off. | `false` | Optional |
+| `KPL_API_BASE` | Base URL of the kpl-unified-client HTTP service; must start with `http://` or `https://`. Use `http://host.docker.internal:8010` under Docker. | `http://127.0.0.1:8010` | Optional |
+| `KPL_PRIORITY` | KPL data source priority; lower values are tried earlier. | `-1` | Optional |
+| `KPL_TIMEOUT` | Per-request timeout in seconds for KPL HTTP calls. | `10` | Optional |
 | `ENABLE_REALTIME_QUOTE` | Enable real-time quotes (if disabled, uses historical closing prices for analysis) | `true` | Optional |
 | `ENABLE_REALTIME_TECHNICAL_INDICATORS` | Intraday real-time technicals: Calculate MA5/MA10/MA20 and bull trends using real-time prices when enabled (Issue #234); uses yesterday's close if disabled. | `true` | Optional |
 | `ENABLE_CHIP_DISTRIBUTION` | Enable chip distribution analysis (this API is unstable, recommended to disable for cloud deployment). GitHub Actions users must set `ENABLE_CHIP_DISTRIBUTION=true` in Repository Variables to enable; disabled by default in workflows. | `true` | Optional |

@@ -728,6 +728,11 @@ class Config:
     tickflow_priority: int = 2
     tickflow_batch_daily_enabled: bool = True
     tickflow_batch_size: int = 100
+    # KPL（开盘啦）本机 HTTP 服务；默认关闭，不配置不影响现有数据源
+    kpl_enabled: bool = False
+    kpl_api_base: str = "http://127.0.0.1:8010"
+    kpl_priority: int = -1
+    kpl_timeout: int = 10
     finnhub_api_key: Optional[str] = None
     alphavantage_api_key: Optional[str] = None
     longbridge_app_key: Optional[str] = None
@@ -1623,6 +1628,10 @@ class Config:
             tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
             tickflow_batch_daily_enabled=parse_env_bool(os.getenv('TICKFLOW_BATCH_DAILY_ENABLED'), default=True),
             tickflow_batch_size=parse_env_int(os.getenv('TICKFLOW_BATCH_SIZE'), 100, field_name='TICKFLOW_BATCH_SIZE', minimum=1),
+            kpl_enabled=parse_env_bool(os.getenv('KPL_ENABLED'), default=False),
+            kpl_api_base=(os.getenv('KPL_API_BASE') or 'http://127.0.0.1:8010').strip(),
+            kpl_priority=parse_env_int(os.getenv('KPL_PRIORITY'), -1, field_name='KPL_PRIORITY'),
+            kpl_timeout=parse_env_int(os.getenv('KPL_TIMEOUT'), 10, field_name='KPL_TIMEOUT', minimum=1),
             finnhub_api_key=os.getenv('FINNHUB_API_KEY') or None,
             alphavantage_api_key=os.getenv('ALPHAVANTAGE_API_KEY') or None,
             longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,

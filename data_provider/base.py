@@ -618,6 +618,7 @@ class DataFetcherManager:
         "AkshareFetcher": {"cn", "hk"},
         "TushareFetcher": {"cn", "hk"},
         "TickFlowFetcher": {"cn"},
+        "KplFetcher": {"cn"},
         "PytdxFetcher": {"cn"},
         "BaostockFetcher": {"cn"},
         "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw"},
@@ -1190,6 +1191,23 @@ class DataFetcherManager:
             )
         else:
             logger.debug("[data source init] skip TickFlowFetcher because TICKFLOW_API_KEY is not configured")
+
+        if getattr(config, "kpl_enabled", False):
+            try:
+                from .kpl_fetcher import KplFetcher
+
+                optional_fetchers.append(
+                    KplFetcher(
+                        api_base=getattr(config, "kpl_api_base", None),
+                        timeout=getattr(config, "kpl_timeout", None),
+                        priority=getattr(config, "kpl_priority", None),
+                    )
+                )
+            except Exception as exc:
+                # 构造失败不应阻断其它数据源初始化，KPL 本身也只是增强源
+                logger.warning("[KplFetcher] 初始化失败，跳过该数据源: %s", exc)
+        else:
+            logger.debug("[data source init] skip KplFetcher because KPL_ENABLED is not enabled")
 
         if LongbridgeFetcher.has_configured_credentials(config):
             optional_fetchers.append(LongbridgeFetcher())  # 长桥（美股/港股兜底，懒加载）

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增开盘啦（KPL）数据源接入地基：`data_provider/kpl_http.py` 提供 HTTP 客户端与**凭证失效探针**，通过 `KPL_ENABLED`/`KPL_API_BASE`/`KPL_PRIORITY`/`KPL_TIMEOUT` 配置，默认关闭且关闭时完全不实例化。KPL 凭证过期时上游不报错只返回空数据，探针以交易日涨跌家数为金丝雀判据（并用节假日表排除休市误判），失效时自动停用该源并回落既有数据源，避免静默产出空数据报告。
+
 - [修复] `TUSHARE_API_URL`（Web 设置页可编辑的 Tushare 自定义接入地址）新增 `http://`/`https://` 前缀校验：非法值不再被 `_TushareHttpClient` 静默当作请求地址使用，而是在数据源初始化阶段捕获并自动降级为不可用，不影响其它数据源；Web 设置页保存时同步做格式校验，避免运行时才发现配置无效。
 - [修复] `Config._load_from_env` 合并冲突导致 `agent_litellm_model` 未传入构造函数，修复 Agent 模型配置失效问题。
 - [修复] `HistoryService` 历史列表 TTL 缓存键未包含数据库路径，修复跨测试数据库污染导致分页结果错误的问题。

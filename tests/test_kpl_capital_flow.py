@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 """KPL 个股资金流：取数实现与降级链。
 
-接入动机是口径正确性，不是偏好。以 Tushare ``moneyflow``（特大单+大单）为
-仲裁基准，8 只标的 × 12 个交易日共 96 个样本实测：
+接入动机是**可持续性**：Tushare 代理站下线后 Mairuiapi 是唯一的个股资金流
+来源，KPL 提供一条不依赖将失效凭证的通路。
 
-    KPL       方向一致率 88.5%   相关系数 +0.762
-    Mairuiapi 方向一致率 52.1%   相关系数 +0.102
+⚠️ 不要把这次接入当成「KPL 口径比 Mairui 准」。曾用 Tushare ``moneyflow``
+的特大单+大单之和做仲裁基准，得出 KPL 88.5% / Mairui 52.1% 的方向一致率；
+但改用 Tushare 自己的 ``net_mf_amount`` 字段，结论完全反转
+（KPL 61.5% / Mairui 77.1%）。同一个"基准"给出两个相反答案，说明基准的
+主力口径定义本身未经校准，两组数字都不能作为准确性证据。扩样到 96 个样本
+只是放大了同一个有偏方法。对拍脚本 scripts/check_capital_flow_parity.py
+保留下来是为了在 Tushare 下线前留存基线，不是为了论证优劣。
 
-Mairuiapi 接近随机，且在招商银行(1/12, -0.677)、工商银行(2/12, -0.631) 上
-系统性反向。对拍脚本见 scripts/check_capital_flow_parity.py。
+下面的用例只锁定**可独立验证的事实**：端点语义、聚合算术、降级行为。
 """
 
 import importlib.util
@@ -123,6 +127,76 @@ class TestCapitalFlowAggregation(unittest.TestCase):
     def test_non_a_share_rejected(self) -> None:
         for bad in ("AAPL", "00700", ""):
             self.assertIsNone(_fetcher().get_capital_flow(bad))
+
+
+class TestCapitalFlowSemantics(unittest.TestCase):
+    """锁定 2026-07-26 实测确认的上游语义。"""
+
+    def test_takes_last_item_as_daily_close_total(self) -> None:
+        """items 是当日 09:30~15:00 每 5 分钟的**累计值**，不是增量。
+
+        实测 000977 单日 49 条、main_buy 单调递增，且末条与
+        /big-money/stock-dp-realdata 的当日值逐位一致，故取 items[-1] 而非求和。
+        """
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+        cumulative = [
+            {"main_buy": 1_000, "main_sell": -400, "turnover": 5_000},
+            {"main_buy": 2_500, "main_sell": -900, "turnover": 9_000},
+            {"main_buy": 3_000, "main_sell": -1_200, "turnover": 12_000},
+        ]
+        client.get.return_value = {"items": cumulative}
+        r = KplFetcher(client=client).get_capital_flow("000977", days=1)
+        self.assertEqual(r["main_net_inflow"], 3_000 - 1_200)
+
+    def test_net_all_field_is_ignored(self) -> None:
+        """上游 net_all 与 main_buy+main_sell 是两个不同口径，符号常相反。
+
+        实测 000977 15:00: main_buy+main_sell = -135,613,195 而
+        net_all = +335,735,894。误用 net_all 会让资金方向整体翻转。
+        """
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+        client.get.return_value = {
+            "items": [{"main_buy": 100, "main_sell": -300, "net_all": 999_999}]
+        }
+        r = KplFetcher(client=client).get_capital_flow("000977", days=1)
+        self.assertEqual(r["main_net_inflow"], -200)
+
+    def test_no_main_coverage_is_not_zero_inflow(self) -> None:
+        """有成交但主力买卖全 0 == 该标的无主力资金覆盖，必须跳过。
+
+        实测北交所 920689 当日 turnover 14,501,862（与日线 amount 逐位一致）
+        而 main_buy/main_sell 均为 0。当作真值 0 会用「零流入」冒充「无数据」，
+        使下游判为中性而不是回落到其它数据源。
+        """
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+        client.get.return_value = {
+            "items": [{"main_buy": 0, "main_sell": 0, "turnover": 14_501_862}]
+        }
+        self.assertIsNone(KplFetcher(client=client).get_capital_flow("920689", days=5))
+
+    def test_genuine_zero_net_on_flat_day_is_kept(self) -> None:
+        """买卖相抵得到净额 0 是真值，不能与「无覆盖」混为一谈。"""
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+        client.get.return_value = {
+            "items": [{"main_buy": 500, "main_sell": -500, "turnover": 9_000}]
+        }
+        r = KplFetcher(client=client).get_capital_flow("000977", days=1)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["main_net_inflow"], 0)
+
+    def test_lookback_window_survives_spring_festival(self) -> None:
+        """10 个交易日最坏要跨 4 个周末(8 天)+ 春节连休(约 9 天)。
+
+        余量不足会让 inflow_10d 静默变 None，而不是报错。
+        """
+        from data_provider import kpl_fetcher as K
+
+        probe = K._MAX_FLOW_DAYS * 2 + K._FLOW_LOOKBACK_SLACK
+        self.assertGreaterEqual(probe, 10 + 8 + 9)
 
 
 class TestCapitalFlowFallbackChain(unittest.TestCase):

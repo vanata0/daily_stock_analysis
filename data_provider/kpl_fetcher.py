@@ -49,9 +49,12 @@ _HAND_TO_SHARE = 100
 # 涨停池按连板数分档查询，实测 5 板及以上通常为空，逐档聚合到此上限
 _MAX_CONSECUTIVE_BOARD = 8
 
-# 资金流最多回溯的交易日数，以及为跳过休市多探的日历日余量
+# 资金流最多回溯的交易日数
 _MAX_FLOW_DAYS = 10
-_FLOW_LOOKBACK_SLACK = 8
+# 为跳过休市多探的日历日余量。10 个交易日最坏要跨 4 个周末(8 天)加一次春节
+# 连休(约 9 天)，即约 27 个日历日；余量取 20 让最坏情况仍有富裕，多探的日子
+# 只会命中空响应并被跳过，成本是几次本地 HTTP 调用。
+_FLOW_LOOKBACK_SLACK = 20
 
 
 class KplFetcher(BaseFetcher):
@@ -326,8 +329,15 @@ class KplFetcher(BaseFetcher):
         用它做多日累计会把同一天叠加 N 遍；``chouma-history`` 的 ``day``
         真实生效，同标的不同日期返回不同数值。
 
-        口径依据：以 Tushare ``moneyflow``（特大单+大单）为仲裁基准，8 只标的
-        × 12 个交易日共 96 个样本上，本实现方向一致率 88.5%、相关系数 +0.762。
+        上游语义（2026-07-26 实测确认）：
+          - ``items`` 是当日 09:30~15:00 每 5 分钟一条的**累计值**（49 条），
+            ``main_buy`` 单调递增，故取 ``items[-1]`` 而非求和。末条与
+            ``/big-money/stock-dp-realdata`` 的当日值逐位一致。
+          - ``main_sell`` 上游已带负号，净额是相加而非相减。
+          - ⚠️ 同结构里的 ``net_all`` 是**另一个口径**，与 ``main_buy+main_sell``
+            符号常相反（000977 收盘 -1.36 亿 vs net_all +3.36 亿），不可混用。
+          - 历史深度实测回溯到 T-400 仍完整；非交易日返回空 items，被跳过。
+          - 盘中调用拿到的是当时的运行累计值，不是全天终值。
 
         Returns:
             {"main_net_inflow", "inflow_5d", "inflow_10d", "trade_date"}，
@@ -364,6 +374,17 @@ class KplFetcher(BaseFetcher):
             buy = _to_float(last.get("main_buy"))
             sell = _to_float(last.get("main_sell"))
             if buy is None and sell is None:
+                continue
+            # ⚠️ 主力买卖同时为 0 但当日有成交，说明该标的没有主力资金覆盖，
+            # 不是「净流入为零」。实测北交所 920689 当日成交 1450 万
+            # （turnover 与日线 amount 逐位一致）而 main_buy/main_sell 全为 0。
+            # 当作真值 0 会用「零流入」冒充「无数据」，让下游误判为中性而不是
+            # 回落到其它数据源。
+            if not buy and not sell and _to_float(last.get("turnover")):
+                logger.debug(
+                    "[KplFetcher] %s %s 有成交但无主力资金覆盖，跳过该日",
+                    stock_code, day_str,
+                )
                 continue
             # 上游 main_sell 已是负值，直接相加即为净额
             daily.append((buy or 0.0) + (sell or 0.0))

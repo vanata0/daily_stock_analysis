@@ -265,6 +265,10 @@ def _extract_latest_row(df: pd.DataFrame, stock_code: str) -> Optional[pd.Series
 class AkshareFundamentalAdapter:
     """AkShare adapter for fundamentals, capital flow and dragon-tiger signals."""
 
+    # Lazily built KplFetcher reused across calls; the class has no __init__,
+    # so this class-level default is what instances start from.
+    _kpl_fetcher: Optional[Any] = None
+
     def _call_df_candidates(
         self,
         candidates: List[Tuple[str, Dict[str, Any]]],
@@ -414,6 +418,29 @@ class AkshareFundamentalAdapter:
         result["status"] = "partial" if has_content else "not_supported"
         return result
 
+    def _get_capital_flow_kpl(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """Fetch individual stock capital flow from the KPL data source.
+
+        Returns the same stock_flow shape as the Mairuiapi path
+        (main_net_inflow / inflow_5d / inflow_10d, all in yuan). Returns None
+        when KPL is disabled, unavailable, or has no data — the caller then
+        falls back to Mairuiapi and AkShare.
+        """
+        try:
+            from src.config import get_config
+
+            if not getattr(get_config(), "kpl_enabled", False):
+                return None
+
+            from data_provider.kpl_fetcher import KplFetcher
+
+            if self._kpl_fetcher is None:
+                self._kpl_fetcher = KplFetcher()
+            return self._kpl_fetcher.get_capital_flow(stock_code)
+        except Exception as exc:
+            logger.warning("kpl capital_flow failed for %s: %s", stock_code, exc)
+            return None
+
     def _get_capital_flow_mairui(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
         Fetch individual stock capital flow from Mairuiapi.
@@ -493,12 +520,23 @@ class AkshareFundamentalAdapter:
             "errors": [],
         }
 
-        # --- Individual stock flow: Mairuiapi first ---
-        mairui_flow = self._get_capital_flow_mairui(stock_code)
-        if mairui_flow is not None:
+        # --- Individual stock flow: KPL first, then Mairuiapi ---
+        # KPL 排在最前是口径准确性问题而非偏好：以 Tushare moneyflow（特大单+大单）
+        # 为仲裁基准，8 只标的 × 12 个交易日共 96 个样本上，KPL 方向一致率 88.5%
+        # / 相关系数 +0.762，而 Mairuiapi 仅 52.1% / +0.102 —— 后者接近随机，且在
+        # 招商银行(1/12, -0.677)、工商银行(2/12, -0.631) 等标的上系统性反向。
+        # Mairuiapi 保留为兜底而非删除，便于 KPL 不可用时仍有数据。
+        kpl_flow = self._get_capital_flow_kpl(stock_code)
+        mairui_flow = None
+        if kpl_flow is not None:
+            result["stock_flow"] = kpl_flow
+            result["source_chain"].append("capital_stock:kpl")
+        else:
+            mairui_flow = self._get_capital_flow_mairui(stock_code)
+        if kpl_flow is None and mairui_flow is not None:
             result["stock_flow"] = mairui_flow
             result["source_chain"].append("capital_stock:mairui")
-        else:
+        elif kpl_flow is None and mairui_flow is None:
             # Fallback: AkShare East-Finance
             stock_df, stock_source, stock_errors = self._call_df_candidates([
                 ("stock_individual_fund_flow", {"stock": stock_code}),

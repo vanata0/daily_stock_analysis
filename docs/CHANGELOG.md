@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 个股资金流主源由迈瑞数据切换为 KPL：以 Tushare `moneyflow`（特大单+大单）为仲裁基准，8 只标的 × 12 个交易日共 96 个样本实测，迈瑞方向一致率仅 52.1%（相关系数 +0.102，接近随机），在招商银行 1/12、工商银行 2/12 等标的上系统性反向；KPL 方向一致率 88.5%（相关系数 +0.762）。迈瑞保留为兜底，链路为 KPL → 迈瑞 → 东财。资金流字段契约不变（`main_net_inflow`/`inflow_5d`/`inflow_10d`），原迈瑞的四档明细字段无下游消费方。
+- [测试] 新增 `scripts/verify_capital_flow_parity.py` 固化资金流口径对拍，可按标的与回溯天数复跑；仲裁依赖 Tushare 接入，该接入下线后将无法再提供基准。
 - [新功能] KPL 凭证失效时推送系统错误告警：探针判定失效后经既有 `system_error` 路由通知（渠道由 `NOTIFICATION_SYSTEM_ERROR_CHANNELS` 控制，未配置则仅留日志），带固定 dedup key 复用通知层去重与冷却，仅在「可用→失效」跃迁时触发，休市空数据不误报，告警链路本身异常不影响数据源降级。
 - [修复] `scripts/refresh_stock_index.py --skip-fetch` 在 `data/stock_list_*.csv` 全部缺失时会静默用 JP/KR 种子数据重新生成索引并以退出码 0 结束，把 3 万余条的自动补全索引覆盖成数十条；现在改为前置校验并中止（退出码 2），仅部分缺失时给出会缺哪些市场的警告。
 - [改进] `scripts/refresh_stock_index.py` 在 TUSHARE_TOKEN 已配置但抓取失败（如接入地址下线、积分不足）时输出可操作提示，并说明运行时自动补全由 `STOCK_INDEX_REMOTE_UPDATE_ENABLED` 从 GitHub 拉取、不受该脚本失败影响。

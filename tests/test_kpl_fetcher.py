@@ -262,6 +262,184 @@ class TestKplFetcherRealtimeQuote(unittest.TestCase):
         self.assertIsNone(KplFetcher(client=c).get_realtime_quote("AAPL"))
 
 
+class TestKplFetcherStockInfo(unittest.TestCase):
+    """个股辅助信息：股票名与所属板块。"""
+
+    def _fetcher(self, payload, valid=True):
+        c = MagicMock()
+        c.is_credential_valid.return_value = valid
+        c.get.return_value = payload
+        return KplFetcher(client=c)
+
+    def test_stock_name_extracted(self) -> None:
+        f = self._fetcher({"code": "600519", "name": "贵州茅台", "last": 1297.41})
+        self.assertEqual(f.get_stock_name("600519"), "贵州茅台")
+
+    def test_stock_name_none_when_unavailable(self) -> None:
+        f = self._fetcher({"name": "贵州茅台"}, valid=False)
+        self.assertIsNone(f.get_stock_name("600519"))
+
+    def test_stock_name_none_on_blank(self) -> None:
+        f = self._fetcher({"code": "600519", "name": "  "})
+        self.assertIsNone(f.get_stock_name("600519"))
+
+    def test_belong_board_method_name_is_singular(self) -> None:
+        """管理器按 `get_belong_board`（单数）做 hasattr 探测，改名会静默失效。"""
+        self.assertTrue(hasattr(KplFetcher, "get_belong_board"))
+
+    def test_belong_board_mapped(self) -> None:
+        payload = {"stock_id": "600519", "count": 2, "sectors": [
+            {"sector_code": "801862", "sector_name": "高股息精选", "change_pct": -1.98},
+            {"sector_code": "801035", "sector_name": "酿酒", "change_pct": -2.71},
+        ]}
+        boards = self._fetcher(payload).get_belong_board("600519")
+        self.assertEqual(boards, [
+            {"name": "高股息精选", "code": "801862"},
+            {"name": "酿酒", "code": "801035"},
+        ])
+
+    def test_belong_board_dedupes_and_skips_blank(self) -> None:
+        payload = {"sectors": [
+            {"sector_code": "801035", "sector_name": "酿酒"},
+            {"sector_code": "801035", "sector_name": "酿酒"},
+            {"sector_code": "801999", "sector_name": "  "},
+        ]}
+        boards = self._fetcher(payload).get_belong_board("600519")
+        self.assertEqual(boards, [{"name": "酿酒", "code": "801035"}])
+
+    def test_belong_board_none_when_empty(self) -> None:
+        self.assertIsNone(self._fetcher({"sectors": []}).get_belong_board("600519"))
+
+    def test_belong_board_none_on_upstream_error(self) -> None:
+        c = MagicMock()
+        c.is_credential_valid.return_value = True
+        c.get.side_effect = KplRequestError("boom")
+        self.assertIsNone(KplFetcher(client=c).get_belong_board("600519"))
+
+
+class TestKplFetcherSectorRankings(unittest.TestCase):
+    """板块排行 —— 上游按强度排序，必须自行按涨跌幅重排。"""
+
+    # 刻意让强度序与涨跌幅序不一致，才能验证重排真的发生了
+    ROWS = {"items": [
+        {"code": "801001", "name": "芯片",   "strength": 6376, "change_pct": -1.906},
+        {"code": "801250", "name": "并购重组", "strength": 5757, "change_pct": -2.257},
+        {"code": "801900", "name": "中船系",  "strength": 100,  "change_pct": 0.925},
+        {"code": "801800", "name": "铀矿",    "strength": 200,  "change_pct": -4.739},
+        {"code": "801700", "name": "工业气体", "strength": 300,  "change_pct": 0.193},
+    ]}
+
+    def _fetcher(self, payload=None, valid=True):
+        c = MagicMock()
+        c.is_credential_valid.return_value = valid
+        c.get.return_value = payload if payload is not None else self.ROWS
+        return KplFetcher(client=c)
+
+    def test_uses_full_market_ranking_endpoint(self) -> None:
+        """必须打 pc-plate-ranking。
+
+        /plate-list/top-sectors 是「精选强势板块」，实测无论 page_size 多大都
+        只回 8~10 条，用它的最低值当领跌会得到错误结论。
+        """
+        f = self._fetcher()
+        f.get_sector_rankings(2)
+        called = f._client.get.call_args[0][0]
+        self.assertIn("pc-plate-ranking", called)
+
+    def test_top_sorted_desc_by_change_pct(self) -> None:
+        top, _ = self._fetcher().get_sector_rankings(3)
+        self.assertEqual([r["name"] for r in top], ["中船系", "工业气体", "芯片"])
+
+    def test_bottom_sorted_asc_by_change_pct(self) -> None:
+        """领跌应从最差开始，方便下游直接展示。"""
+        _, bottom = self._fetcher().get_sector_rankings(3)
+        self.assertEqual([r["name"] for r in bottom], ["铀矿", "并购重组", "芯片"])
+
+    def test_contract_keys_only(self) -> None:
+        top, bottom = self._fetcher().get_sector_rankings(2)
+        for row in top + bottom:
+            self.assertEqual(set(row.keys()), {"name", "change_pct"})
+
+    def test_rows_missing_change_pct_dropped(self) -> None:
+        payload = {"items": [
+            {"name": "有效", "change_pct": 1.0},
+            {"name": "无涨跌幅"},
+            {"name": "", "change_pct": 2.0},
+        ]}
+        top, _ = self._fetcher(payload).get_sector_rankings(5)
+        self.assertEqual([r["name"] for r in top], ["有效"])
+
+    def test_none_when_unavailable_or_empty(self) -> None:
+        self.assertIsNone(self._fetcher(valid=False).get_sector_rankings(3))
+        self.assertIsNone(self._fetcher({"items": []}).get_sector_rankings(3))
+
+    def test_concept_rankings_intentionally_not_implemented(self) -> None:
+        """上游只有题材热度分（score），没有涨跌幅。
+
+        契约要求 {"name", "change_pct"}，把热度分填进 change_pct 会被下游当成
+        涨跌幅解读，因此保持不实现，由 BaseFetcher 默认 None 触发降级。
+        """
+        self.assertIsNone(self._fetcher().get_concept_rankings(3))
+
+
+class TestKplFetcherLimitUpPool(unittest.TestCase):
+    """涨停池 —— 上游按连板数分档，需逐档聚合。"""
+
+    BOARDS = {
+        4: [{"code": "002879", "name": "长缆科技", "consecutive_days": 4, "reason": "智能电网"}],
+        3: [{"code": "000595", "name": "新能股份", "consecutive_days": 3, "reason": "绿色电力"}],
+        2: [{"code": "000533", "name": "顺钠股份", "consecutive_days": 2, "reason": "智能电网"}],
+        1: [{"code": "002374", "name": "中锐股份", "consecutive_days": 1, "reason": "并购重组"}],
+    }
+
+    def _client(self, boards=None, valid=True, fail_boards=()):
+        boards = self.BOARDS if boards is None else boards
+        c = MagicMock()
+        c.is_credential_valid.return_value = valid
+
+        def fake_get(path, params=None):
+            pid = (params or {}).get("pid_type")
+            if pid in fail_boards:
+                raise KplRequestError(f"board {pid} down")
+            return {"pid_type": pid, "items": boards.get(pid, [])}
+
+        c.get.side_effect = fake_get
+        return c
+
+    def test_boards_aggregated_high_to_low(self) -> None:
+        pool = KplFetcher(client=self._client()).get_limit_up_pool(n=10)
+        self.assertEqual([p["consecutive_days"] for p in pool], [4, 3, 2, 1])
+
+    def test_respects_result_limit(self) -> None:
+        pool = KplFetcher(client=self._client()).get_limit_up_pool(n=2)
+        self.assertEqual(len(pool), 2)
+        self.assertEqual(pool[0]["consecutive_days"], 4)
+
+    def test_single_board_failure_does_not_abort(self) -> None:
+        """某一档位失败不应丢掉其它档位已取到的数据。"""
+        pool = KplFetcher(client=self._client(fail_boards={3})).get_limit_up_pool(n=10)
+        days = [p["consecutive_days"] for p in pool]
+        self.assertIn(4, days)
+        self.assertIn(2, days)
+        self.assertNotIn(3, days)
+
+    def test_date_switches_to_history_endpoint(self) -> None:
+        c = self._client()
+        KplFetcher(client=c).get_limit_up_pool(date="20260724", n=5)
+        paths = [call.args[0] for call in c.get.call_args_list]
+        self.assertTrue(all("daily-limit-perf-history" in p for p in paths))
+
+    def test_realtime_endpoint_without_date(self) -> None:
+        c = self._client()
+        KplFetcher(client=c).get_limit_up_pool(n=5)
+        paths = [call.args[0] for call in c.get.call_args_list]
+        self.assertTrue(all("limit-up/realtime" in p for p in paths))
+
+    def test_none_when_unavailable_or_empty(self) -> None:
+        self.assertIsNone(KplFetcher(client=self._client(valid=False)).get_limit_up_pool())
+        self.assertIsNone(KplFetcher(client=self._client(boards={})).get_limit_up_pool())
+
+
 class TestKplFetcherRegistration(unittest.TestCase):
     """注册契约：默认关闭时不得实例化。"""
 

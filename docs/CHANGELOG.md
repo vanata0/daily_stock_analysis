@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] KPL 数据源补齐板块与涨停维度：个股所属板块、股票名称、板块涨跌排行（取自全市场 `pc-plate-ranking` 并按涨跌幅重排，而非只含 8~10 条的「精选强势板块」）、涨停池与连板梯队（按连板数分档聚合，单档失败不影响其它档位）。概念排行有意不实现——上游只提供题材热度分而非涨跌幅，填入 `change_pct` 会被下游误读为涨跌幅，保持降级到既有数据源。
 - [改进] KPL 数据源默认优先级由 -1 调整为 -2，使其在启用后领先 Tushare 接管 A 股日线。切换前已跨除权日（600519 2026-06-26 每 10 股派 280.242 元）与 Baostock 比对确认同为前复权口径（除权后偏差 0.0000%），并覆盖沪深主板、创业板、科创板、中小板、ST 股共 7 类标的收盘价零偏差；北交所标的 KPL 有数据而 Baostock 无。
 - [新功能] KPL 数据源接入 A 股实时行情并置于最高优先级：数据取自 `/orderbook/{id}`，补齐现有免费源常缺的 PE/PB 与总/流通市值；`KPL_ENABLED=true` 时自动注入到 `REALTIME_SOURCE_PRIORITY` 首位（显式配置该变量时仍以用户配置为准），失败自动回落腾讯/AkShare/Efinance 既有链路。
 - [新功能] 新增开盘啦（KPL）数据源接入地基：`data_provider/kpl_http.py` 提供 HTTP 客户端与**凭证失效探针**，通过 `KPL_ENABLED`/`KPL_API_BASE`/`KPL_PRIORITY`/`KPL_TIMEOUT` 配置，默认关闭且关闭时完全不实例化。KPL 凭证过期时上游不报错只返回空数据，探针以交易日涨跌家数为金丝雀判据（并用节假日表排除休市误判），失效时自动停用该源并回落既有数据源，避免静默产出空数据报告。

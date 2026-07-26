@@ -6,12 +6,12 @@ KplFetcher —— 开盘啦（KPL）数据源
 通过本机常驻的 kpl-unified-client HTTP 服务获取 A 股数据，作为 Tushare
 代理站下线后的主力替代源。
 
-优先级：由 ``KPL_PRIORITY`` 控制，默认 -1（启用后排在所有数据源最前）。
+优先级：由 ``KPL_PRIORITY`` 控制，默认 -2（启用后领先 Tushare 接管 A 股行情）。
 
 配置（.env）：
   KPL_ENABLED   = false                    是否启用；关闭时本 fetcher 完全不实例化
   KPL_API_BASE  = http://127.0.0.1:8010    kpl-unified-client 服务地址
-  KPL_PRIORITY  = -1                       数据源优先级，越小越先尝试
+  KPL_PRIORITY  = -2                       数据源优先级，越小越先尝试
   KPL_TIMEOUT   = 10                       单次请求超时秒数
 
 不可用条件（任一满足即整体退出调用链，回落到其它数据源）：
@@ -27,7 +27,7 @@ KplFetcher —— 开盘啦（KPL）数据源
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -45,12 +45,15 @@ logger = logging.getLogger(__name__)
 # 上游 volume 按「手」计，DSA 标准列按「股」
 _HAND_TO_SHARE = 100
 
+# 涨停池按连板数分档查询，实测 5 板及以上通常为空，逐档聚合到此上限
+_MAX_CONSECUTIVE_BOARD = 8
+
 
 class KplFetcher(BaseFetcher):
     """开盘啦数据源（仅 A 股）。"""
 
     name = "KplFetcher"
-    priority = -1
+    priority = -2
 
     def __init__(
         self,
@@ -77,7 +80,7 @@ class KplFetcher(BaseFetcher):
             base_url=resolved_base or "http://127.0.0.1:8010",
             timeout=resolved_timeout or 10,
         )
-        self.priority = resolved_priority if resolved_priority is not None else -1
+        self.priority = resolved_priority if resolved_priority is not None else -2
 
     @staticmethod
     def _safe_config() -> Any:
@@ -234,6 +237,168 @@ class KplFetcher(BaseFetcher):
             stock_code, quote.price, quote.pe_ratio, quote.pb_ratio,
         )
         return quote
+
+    # ------------------------------------------------------------------
+    # 个股辅助信息
+    # ------------------------------------------------------------------
+
+    def get_stock_name(self, stock_code: str) -> Optional[str]:
+        """获取股票名称。"""
+        if not self.is_available():
+            return None
+        code = normalize_stock_code(stock_code)
+        if not code or not code.isdigit() or len(code) != 6:
+            return None
+        try:
+            data = self._client.get(f"/orderbook/{code}")
+        except KplError as exc:
+            logger.warning("[KplFetcher] 获取股票名称失败 %s: %s", stock_code, exc)
+            return None
+        name = str(data.get("name") or "").strip()
+        return name or None
+
+    def get_belong_board(self, stock_code: str) -> Optional[List[Dict[str, Any]]]:
+        """获取个股所属板块。
+
+        方法名是单数 ``get_belong_board`` —— DataFetcherManager 用这个名字做
+        hasattr 探测，管理器侧对外的方法才叫 ``get_belong_boards``。
+
+        Returns:
+            [{"name": 板块名, "code": 板块代码}, ...]；失败返回 None
+        """
+        if not self.is_available():
+            return None
+        code = normalize_stock_code(stock_code)
+        if not code or not code.isdigit() or len(code) != 6:
+            return None
+
+        try:
+            data = self._client.get(f"/plate-list/stock-sector-v2/{code}")
+        except KplError as exc:
+            logger.warning("[KplFetcher] 获取所属板块失败 %s: %s", stock_code, exc)
+            return None
+
+        boards: List[Dict[str, Any]] = []
+        seen = set()
+        for item in data.get("sectors") or []:
+            name = str(item.get("sector_name") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            board: Dict[str, Any] = {"name": name}
+            board_code = str(item.get("sector_code") or "").strip()
+            if board_code:
+                board["code"] = board_code
+            boards.append(board)
+
+        if not boards:
+            logger.debug("[KplFetcher] %s 无所属板块数据", stock_code)
+            return None
+        return boards
+
+    # ------------------------------------------------------------------
+    # 市场维度
+    # ------------------------------------------------------------------
+
+    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """获取板块涨跌排行。
+
+        用 /plate-list/pc-plate-ranking 而不是 /plate-list/top-sectors：后者是
+        「精选强势板块」，实测无论 page_size 传多大都只回 8~10 条，拿它的最低
+        值当领跌是错的；前者是全市场排行（实测 200 条，涨跌幅 -4.74%~0.93%）。
+
+        Returns:
+            (领涨列表, 领跌列表)，元素为 {"name", "change_pct"}；失败返回 None
+        """
+        if not self.is_available():
+            return None
+        try:
+            data = self._client.get("/plate-list/pc-plate-ranking", params={"page_size": 200})
+        except KplError as exc:
+            logger.warning("[KplFetcher] 获取板块排行失败: %s", exc)
+            return None
+
+        rows = []
+        for item in data.get("items") or []:
+            name = str(item.get("name") or "").strip()
+            change_pct = _to_float(item.get("change_pct"))
+            if name and change_pct is not None:
+                rows.append({"name": name, "change_pct": change_pct})
+
+        if not rows:
+            logger.debug("[KplFetcher] 板块排行无有效数据")
+            return None
+
+        # 上游按强度排序而非涨跌幅，这里自行排序取两端
+        ordered = sorted(rows, key=lambda x: x["change_pct"], reverse=True)
+        top = ordered[:n]
+        bottom = list(reversed(ordered[-n:])) if len(ordered) > n else list(reversed(ordered))
+        logger.info("[KplFetcher] 板块排行获取成功: %d 个板块", len(rows))
+        return top, bottom
+
+    def get_limit_up_pool(
+        self,
+        date: Optional[str] = None,
+        n: int = 20,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """获取涨停池与连板梯队。
+
+        上游按连板数分档查询（``pid_type`` 即连板数，实测 1=首板、2=二板…，
+        传 0 会 502），因此这里逐档拉取再聚合，按连板数从高到低返回。
+
+        Args:
+            date: YYYYMMDD；传入则查历史，否则取实时
+            n: 返回条数上限
+        """
+        if not self.is_available():
+            return None
+
+        pool: List[Dict[str, Any]] = []
+        for board in range(_MAX_CONSECUTIVE_BOARD, 0, -1):
+            if len(pool) >= n:
+                break
+            try:
+                if date:
+                    payload = self._client.get(
+                        "/limit-up/daily-limit-perf-history",
+                        params={"date": date, "pid_type": board},
+                    )
+                else:
+                    payload = self._client.get(
+                        "/limit-up/realtime", params={"pid_type": board}
+                    )
+            except KplError as exc:
+                # 单档失败不影响其它档位，继续聚合已拿到的部分
+                logger.warning("[KplFetcher] 涨停池 %d 板档位获取失败: %s", board, exc)
+                continue
+
+            for item in payload.get("items") or []:
+                code = str(item.get("code") or "").strip()
+                if not code:
+                    continue
+                pool.append({
+                    "code": code,
+                    "name": str(item.get("name") or "").strip(),
+                    "change_pct": _to_float(item.get("change_pct")),
+                    "consecutive_days": item.get("consecutive_days"),
+                    "reason": str(item.get("reason") or "").strip(),
+                    "sector_name": str(item.get("sector_code") or "").strip(),
+                    "seal_amount": _to_float(item.get("seal_amount")),
+                    "turnover": _to_float(item.get("turnover")),
+                    "circ_mv": _to_float(item.get("circ_mv")),
+                    "last_price": _to_float(item.get("last_price")),
+                })
+
+        if not pool:
+            logger.debug("[KplFetcher] 涨停池无数据 (date=%s)", date or "realtime")
+            return None
+        logger.info("[KplFetcher] 涨停池获取成功: %d 只", len(pool))
+        return pool[:n]
+
+    # 说明：未实现 get_concept_rankings。上游 /theme/concept-fengkou 返回的是
+    # 题材热度分（score），不是涨跌幅；DSA 的契约要求 {"name", "change_pct"}，
+    # 把热度分填进 change_pct 会让下游把它当涨跌幅解读。保持不实现，由
+    # BaseFetcher 的默认 None 让管理器自动降级到其它数据源。
 
     # ------------------------------------------------------------------
     # 资源释放

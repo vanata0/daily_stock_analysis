@@ -167,6 +167,12 @@ class BaseSearchProvider(ABC):
     # hits instead of dropping every result for lack of a parseable date.
     supplies_publish_dates: bool = True
 
+    # Structured providers that only serve specific dimensions set this to True.
+    # They stay selectable via an explicit provider_preference but are excluded
+    # from the round-robin rotation, so they never displace a general web engine
+    # on a dimension they cannot answer.
+    preference_only: bool = False
+
     def __init__(self, api_keys: List[str], name: str):
         """
         初始化搜索引擎
@@ -2109,6 +2115,182 @@ class SearXNGSearchProvider(BaseSearchProvider):
         )
 
 
+class KplSearchProvider(BaseSearchProvider):
+    """开盘啦（KPL）资讯源。
+
+    与其它 provider 不同，KPL 不是通用 Web 搜索引擎，而是按股票代码查询的
+    结构化财经数据源。因此：
+
+    - ``preference_only = True``：只在维度显式指定 ``provider_preference='kpl'``
+      时被选中，不参与其它维度的轮询。否则 market_analysis（研报目标价、深度
+      分析）这类它覆盖不了的维度会被轮到，反而挤掉真正能搜到的通用引擎。
+    - 需要 ``stock_code`` 才能工作，由调用方按维度显式传入。
+
+    覆盖的维度：
+      announcements —— /news/company-news-report-list/{code}，自带 timestamp
+        与 pdf_url。这是接入 KPL 的主因：该维度原先硬编码走 Bocha，因为
+        SearXNG 的公告结果没有 publishedDate 会被 strict_freshness 全部过滤，
+        Bocha token 过期后该维度会直接归零。
+      latest_news  —— /news/stock-flash-v2/{code}，个股快讯/大事记。
+    """
+
+    # 只接受显式 provider_preference 指定，不参与轮询
+    preference_only = True
+
+    SUPPORTED_DIMENSIONS = ("announcements", "latest_news")
+
+    def __init__(self, client: Any) -> None:
+        # 基类以 api_keys 判定可用性并做轮换；KPL 走本机服务没有 key，
+        # 这里放一个占位值让计时/日志/异常捕获等公共流程照常工作，
+        # 真实可用性由下面的 is_available 覆写（走凭证探针）判定。
+        super().__init__(api_keys=["local"], name="KPL")
+        self._client = client
+
+    @property
+    def is_available(self) -> bool:
+        """可用性取决于 KPL 服务连通与凭证有效，与 api_key 无关。"""
+        try:
+            return bool(self._client.is_credential_valid())
+        except Exception as exc:
+            logger.warning("[KPL] 可用性探测异常: %s", exc)
+            return False
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        days: int = 7,
+        *,
+        stock_code: Optional[str] = None,
+        dimension: Optional[str] = None,
+    ) -> SearchResponse:
+        return self._execute_search(
+            query,
+            max_results=max_results,
+            days=days,
+            stock_code=stock_code,
+            dimension=dimension,
+        )
+
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+        *,
+        stock_code: Optional[str] = None,
+        dimension: Optional[str] = None,
+    ) -> SearchResponse:
+        code = _normalize_kpl_stock_code(stock_code)
+        if not code:
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message=f"KPL 仅支持 A 股 6 位代码，收到 {stock_code!r}",
+            )
+        if dimension not in self.SUPPORTED_DIMENSIONS:
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message=f"KPL 不覆盖检索维度 {dimension!r}",
+            )
+
+        if dimension == "announcements":
+            results = self._fetch_announcements(code, max_results)
+        else:
+            results = self._fetch_stock_flash(code, max_results)
+
+        return SearchResponse(
+            query=query,
+            results=results,
+            provider=self.name,
+            success=bool(results),
+            error_message=None if results else f"KPL {dimension} 无数据",
+        )
+
+    def _fetch_announcements(self, code: str, max_results: int) -> List[SearchResult]:
+        """个股公告：自带 timestamp 与 pdf_url，能通过 strict_freshness 过滤。"""
+        payload = self._client.get(f"/news/company-news-report-list/{code}")
+        results: List[SearchResult] = []
+        for item in (payload.get("items") or [])[: max_results * 3]:
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            results.append(SearchResult(
+                title=title,
+                snippet=title,
+                url=str(item.get("pdf_url") or "").strip(),
+                source="开盘啦·公告",
+                published_date=_kpl_epoch_to_date(item.get("timestamp")),
+            ))
+            if len(results) >= max_results:
+                break
+        return results
+
+    def _fetch_stock_flash(self, code: str, max_results: int) -> List[SearchResult]:
+        """个股快讯/大事记。
+
+        上游会把全市场汇总条（「公告精选」「盘后回购汇总」等）也挂在个股名下，
+        这类条目正文里往往罗列几十只无关股票，直接喂给 LLM 会稀释相关性，
+        因此按标题前缀过滤掉。
+        """
+        payload = self._client.get(
+            f"/news/stock-flash-v2/{code}", params={"page_size": max_results * 4}
+        )
+        results: List[SearchResult] = []
+        for item in payload.get("items") or []:
+            content = str(item.get("content") or "").strip()
+            if not content or _is_kpl_market_roundup(content):
+                continue
+            title = content.split("】")[0].lstrip("【") if content.startswith("【") else content[:40]
+            results.append(SearchResult(
+                title=title.strip() or content[:40],
+                snippet=content,
+                url="",
+                source="开盘啦·快讯",
+                published_date=_kpl_epoch_to_date(item.get("time")),
+            ))
+            if len(results) >= max_results:
+                break
+        return results
+
+
+def _normalize_kpl_stock_code(stock_code: Optional[str]) -> Optional[str]:
+    """提取 A 股 6 位代码；非 A 股返回 None。"""
+    if not stock_code:
+        return None
+    digits = "".join(ch for ch in str(stock_code) if ch.isdigit())
+    return digits if len(digits) == 6 else None
+
+
+def _kpl_epoch_to_date(value: Any) -> Optional[str]:
+    """KPL 的秒级 epoch 转 ``YYYY-MM-DD``；无法解析返回 None。
+
+    公告维度启用了 strict_freshness，缺少可解析日期的结果会被整体过滤，
+    因此这里必须尽量给出日期。
+    """
+    if value in (None, "", 0):
+        return None
+    try:
+        ts = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+# 全市场汇总类快讯的常见标题前缀；这类条目会罗列大量无关个股
+_KPL_ROUNDUP_MARKERS = ("公告精选", "股市避雷针", "盘后公告", "涨停复盘", "收评", "午评")
+
+
+def _is_kpl_market_roundup(content: str) -> bool:
+    head = content[:24]
+    return any(marker in head for marker in _KPL_ROUNDUP_MARKERS)
+
+
 class SearchService:
     """
     搜索服务
@@ -2316,6 +2498,14 @@ class SearchService:
         )
 
         # 初始化搜索引擎（按优先级排序）
+        # 0. KPL（开盘啦）：结构化财经数据源，只服务显式指定它的维度（如公告），
+        #    不参与轮询，因此放在最前不会影响其它维度的通用搜索分配。
+        kpl_provider = self._build_kpl_provider()
+        if kpl_provider is not None:
+            self._providers.append(kpl_provider)
+            logger.info("已配置 KPL 资讯源（仅服务 %s 维度）",
+                        "/".join(KplSearchProvider.SUPPORTED_DIMENSIONS))
+
         # 1. Bocha 优先（中文搜索优化，AI摘要）
         if bocha_keys:
             self._providers.append(BochaSearchProvider(bocha_keys))
@@ -2374,7 +2564,35 @@ class SearchService:
             self.news_max_age_days,
             self.news_window_days,
         )
-    
+
+    @staticmethod
+    def _build_kpl_provider() -> Optional["KplSearchProvider"]:
+        """按配置构造 KPL 资讯源；未启用或不可用时返回 None。
+
+        失败一律 fail-open：KPL 只是增量资讯源，构造异常不应影响其它搜索引擎。
+        """
+        try:
+            from src.config import get_config
+
+            config = get_config()
+            if not getattr(config, "kpl_enabled", False):
+                return None
+
+            from data_provider.kpl_http import KplHttpClient
+
+            client = KplHttpClient(
+                base_url=getattr(config, "kpl_api_base", None) or "http://127.0.0.1:8010",
+                timeout=getattr(config, "kpl_timeout", None) or 10,
+            )
+            provider = KplSearchProvider(client)
+            if not provider.is_available:
+                logger.info("KPL 资讯源不可用（服务未启动或凭证失效），跳过注册")
+                return None
+            return provider
+        except Exception as exc:
+            logger.warning("KPL 资讯源初始化失败，跳过: %s", exc)
+            return None
+
     @staticmethod
     def _is_foreign_stock(stock_code: str) -> bool:
         """判断是否为港股或美股。
@@ -4157,10 +4375,11 @@ class SearchService:
                     ),
                     'desc': '公司公告',
                     'tavily_topic': 'news',
-                    # Bocha 能返回带时间戳的公告资讯，SearXNG 公告类结果无 publishedDate
-                    # 会被 strict_freshness 过滤为 0 条。强制走 Bocha。
+                    # 公告类结果必须带 publishedDate，否则会被 strict_freshness 全部
+                    # 过滤为 0 条（SearXNG 就是如此）。KPL 的公告接口自带 timestamp
+                    # 与 pdf_url，优先走它；不可用时回落到轮询中的通用引擎。
                     'strict_freshness': True,
-                    'provider_preference': 'bocha',
+                    'provider_preference': 'kpl',
                 },
                 {
                     'name': 'earnings',
@@ -4221,7 +4440,9 @@ class SearchService:
                     available_providers[provider_index % len(available_providers)],
                 )
             else:
-                provider = available_providers[provider_index % len(available_providers)]
+                rotation = [p for p in available_providers if not p.preference_only]
+                pool = rotation or available_providers
+                provider = pool[provider_index % len(pool)]
             provider_index += 1
 
             request_days = (
@@ -4237,7 +4458,18 @@ class SearchService:
                 request_days,
             )
 
-            if isinstance(provider, TavilySearchProvider) and dim.get('tavily_topic'):
+            if isinstance(provider, KplSearchProvider):
+                # KPL 按股票代码查结构化数据，而不是按文本 query 搜网页，
+                # 因此需要额外把标的与维度传进去（沿用下方 Tavily 的按 provider
+                # 定制调用形状的既有做法）。
+                response = provider.search(
+                    dim['query'],
+                    max_results=provider_max_results,
+                    days=request_days,
+                    stock_code=stock_code,
+                    dimension=dim['name'],
+                )
+            elif isinstance(provider, TavilySearchProvider) and dim.get('tavily_topic'):
                 response = provider.search(
                     dim['query'],
                     max_results=provider_max_results,

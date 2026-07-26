@@ -918,14 +918,14 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "KPL_PRIORITY": {
         "title": "KPL Priority",
-        "description": "Data source priority for KPL; lower values are tried earlier. Defaults to -1 so KPL leads the chain when enabled.",
+        "description": "Data source priority for KPL; lower values are tried earlier. Defaults to -2 so KPL leads the chain ahead of Tushare when enabled.",
         "category": "data_source",
         "data_type": "integer",
         "ui_control": "number",
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "-1",
+        "default_value": "-2",
         "options": [],
         "validation": {"min": -10, "max": 99},
         "display_order": 26,
@@ -4717,7 +4717,7 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
     },
     "KPL_PRIORITY": {
         "help_key": "settings.data_source.KPL_PRIORITY",
-        "examples": ["KPL_PRIORITY=-1"],
+        "examples": ["KPL_PRIORITY=-2"],
         "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
     },
     "KPL_TIMEOUT": {

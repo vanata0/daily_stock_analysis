@@ -417,7 +417,7 @@ daily_stock_analysis/
 | `TICKFLOW_BATCH_SIZE` | TickFlow 日 K 与实时行情批量请求的单批最大标的数。 | `100` | 可选 |
 | `KPL_ENABLED` | 启用开盘啦（KPL）数据源，覆盖实时行情、日线、板块概念、涨停情绪与公告资讯；需先在本机运行 kpl-unified-client HTTP 服务。关闭时完全不实例化该数据源。 | `false` | 可选 |
 | `KPL_API_BASE` | kpl-unified-client HTTP 服务地址，须以 `http://` 或 `https://` 开头；Docker 部署改用 `http://host.docker.internal:8010`。 | `http://127.0.0.1:8010` | 可选 |
-| `KPL_PRIORITY` | KPL 数据源优先级，数字越小越早尝试。 | `-1` | 可选 |
+| `KPL_PRIORITY` | KPL 数据源优先级，数字越小越早尝试；默认领先 Tushare。 | `-2` | 可选 |
 | `KPL_TIMEOUT` | KPL 单次 HTTP 请求超时秒数。 | `10` | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | Longbridge OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | - | 可选 |
 | `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境使用 | - | 可选 |

@@ -8,7 +8,7 @@
     Mairuiapi 方向一致率 52.1%   相关系数 +0.102
 
 Mairuiapi 接近随机，且在招商银行(1/12, -0.677)、工商银行(2/12, -0.631) 上
-系统性反向。对拍脚本见 scripts/verify_capital_flow_parity.py。
+系统性反向。对拍脚本见 scripts/check_capital_flow_parity.py。
 """
 
 import importlib.util

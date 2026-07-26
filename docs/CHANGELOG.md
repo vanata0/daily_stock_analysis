@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [修复] 个股资金流主源由迈瑞数据切换为 KPL：以 Tushare `moneyflow`（特大单+大单）为仲裁基准，8 只标的 × 12 个交易日共 96 个样本实测，迈瑞方向一致率仅 52.1%（相关系数 +0.102，接近随机），在招商银行 1/12、工商银行 2/12 等标的上系统性反向；KPL 方向一致率 88.5%（相关系数 +0.762）。迈瑞保留为兜底，链路为 KPL → 迈瑞 → 东财。资金流字段契约不变（`main_net_inflow`/`inflow_5d`/`inflow_10d`），原迈瑞的四档明细字段无下游消费方。
-- [测试] 新增 `scripts/verify_capital_flow_parity.py` 固化资金流口径对拍，可按标的与回溯天数复跑；仲裁依赖 Tushare 接入，该接入下线后将无法再提供基准。
+- [测试] 新增 `scripts/check_capital_flow_parity.py` 固化资金流口径对拍，可按标的与回溯天数复跑；仲裁依赖 Tushare 接入，该接入下线后将无法再提供基准。
 - [新功能] KPL 凭证失效时推送系统错误告警：探针判定失效后经既有 `system_error` 路由通知（渠道由 `NOTIFICATION_SYSTEM_ERROR_CHANNELS` 控制，未配置则仅留日志），带固定 dedup key 复用通知层去重与冷却，仅在「可用→失效」跃迁时触发，休市空数据不误报，告警链路本身异常不影响数据源降级。
 - [修复] `scripts/refresh_stock_index.py --skip-fetch` 在 `data/stock_list_*.csv` 全部缺失时会静默用 JP/KR 种子数据重新生成索引并以退出码 0 结束，把 3 万余条的自动补全索引覆盖成数十条；现在改为前置校验并中止（退出码 2），仅部分缺失时给出会缺哪些市场的警告。
 - [改进] `scripts/refresh_stock_index.py` 在 TUSHARE_TOKEN 已配置但抓取失败（如接入地址下线、积分不足）时输出可操作提示，并说明运行时自动补全由 `STOCK_INDEX_REMOTE_UPDATE_ENABLED` 从 GitHub 拉取、不受该脚本失败影响。
@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] `requirements.txt` 含中文注释导致 ASCII 解码测试失败，替换为英文注释。
 - [测试] 修复 `test_data_tools_get_capital_flow.py` Dummy Manager 缺少 `**_kwargs` 导致误判为 error 状态。
 - [修复] AlphaSift 选股 LLM 重排在候选池接近上限时，思考型模型（如 deepseek-v4-flash）的 reasoning_content 会耗尽默认 2048 的 `LLM_MAX_TOKENS` 预算导致正文为空、JSON 解析失败（`no_json_found`）并整体降级为本地 `screen_score` 排序；DSA 现在未显式配置该变量时默认注入 `LLM_MAX_TOKENS=8192`，可通过 `.env` 覆盖。
+- [修复] Web 持仓页面"现价"首屏加载与"刷新数据"始终传 `include_realtime=false`，从未真正请求实时行情，导致长期显示数据库最近一条日线收盘价（可能是几天前）；现在首屏/刷新仍先用 `include_realtime=false` 快速出图，加载完成后自动在后台补发一次 `include_realtime=true` 请求静默升级为实时价，账户切换、成本口径切换、汇率刷新同样受益。
 
 - [新功能] 接入迈瑞数据（Mairuiapi）个股资金流向接口，支持特大/大/中/小单四档明细，作为东财 AkShare 的优先数据源；通过 `MAIRUI_API_KEY` 启用，未配置时自动 fallback 到原有东财接口。
 - [改进] AlphaSift 选股入口在 Web 侧边栏中移动到”问股”下方，贴近 Agent/研究辅助工作流。

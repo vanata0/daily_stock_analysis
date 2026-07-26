@@ -27,6 +27,7 @@ KplFetcher —— 开盘啦（KPL）数据源
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -257,6 +258,57 @@ class KplFetcher(BaseFetcher):
         name = str(data.get("name") or "").strip()
         return name or None
 
+    def get_research_reports(
+        self, stock_code: str, max_count: int = 10
+    ) -> List[Dict[str, Any]]:
+        """获取券商研报列表。
+
+        用 /research/research-field-list（50 条，带标题）而不是
+        /research/research-field-excel——后者只有评级分布与 3 条明细且没有
+        title，填不满 DSA 的研报条目契约。
+
+        返回结构与 TushareFetcher.get_research_reports 对齐，便于
+        research_report_fetcher 的降级链无差别消费；失败返回 []（fail-open）。
+        """
+        if not self.is_available():
+            return []
+        code = normalize_stock_code(stock_code)
+        if not code or not code.isdigit() or len(code) != 6:
+            return []
+
+        try:
+            payload = self._client.get(f"/research/research-field-list/{code}")
+        except KplError as exc:
+            logger.warning("[KplFetcher] 获取研报失败 %s: %s", stock_code, exc)
+            return []
+
+        records: List[Dict[str, Any]] = []
+        seen = set()
+        for item in payload.get("items") or []:
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            date = _epoch_to_date(item.get("timestamp")) or ""
+            key = (date, title)
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append({
+                "title": title,
+                "date": date,
+                "broker": str(item.get("broker") or "").strip(),
+                "rating": str(item.get("rating") or "").strip(),
+                "abstract": "",
+                "analyst": "",
+                "eps": None,
+                "classify": "",
+            })
+            if len(records) >= max_count:
+                break
+
+        logger.info("[KplFetcher] 研报获取成功 %s: %d 条", stock_code, len(records))
+        return records
+
     def get_belong_board(self, stock_code: str) -> Optional[List[Dict[str, Any]]]:
         """获取个股所属板块。
 
@@ -470,3 +522,18 @@ def _to_int(value: Any) -> Optional[int]:
     """把上游可能给出的 str/float/None 统一成 int，无法解析返回 None。"""
     f = _to_float(value)
     return int(f) if f is not None else None
+
+def _epoch_to_date(value: Any) -> Optional[str]:
+    """秒级 epoch 转 ``YYYY-MM-DD``；无法解析返回 None。"""
+    if value in (None, "", 0):
+        return None
+    try:
+        ts = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    except (OSError, OverflowError, ValueError):
+        return None

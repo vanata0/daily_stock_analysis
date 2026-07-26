@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 券商研报接入 KPL：`get_research_context` 的降级链扩展为 KPL → Tushare `report_rc` → 东财 `reportapi`，KPL 排在最前以应对 Tushare 代理站下线；任一环有结果即停止下探，单环异常仅记入 `errors` 不打断链路。
 - [新功能] 情报检索新增 KPL 资讯源，公告维度由 Bocha 改走 KPL：该维度此前硬编码指定 Bocha（因 SearXNG 公告结果无 publishedDate 会被 `strict_freshness` 全部过滤），Bocha token 过期后会直接归零；KPL 公告接口自带时间戳与 PDF 链接，可满足时效过滤。同时覆盖个股快讯维度，并过滤「公告精选」「股市避雷针」等会罗列大量无关个股的全市场汇总条目。
 - [改进] 搜索 Provider 新增 `preference_only` 标志：结构化数据源（如 KPL）只在维度显式指定时被选用，不参与轮询，避免挤占研报深度分析等它覆盖不了的维度；KPL 不可用时公告维度自动回落到轮询中的通用搜索引擎。
 - [新功能] KPL 数据源接入大盘涨跌统计（取自 `/mood/market-daban-snapshot`，一条即覆盖涨/跌/平/涨停/跌停家数与两市成交额；成交额按上游万元口径换算为亿元，与 TickFlow 保持一致）。主要指数有意不实现——上游 `global-index` 只有海外指数、期货、商品与汇率，没有上证/深证/创业板等 A 股指数。

@@ -317,6 +317,69 @@ class TestKplFetcherStockInfo(unittest.TestCase):
         self.assertIsNone(KplFetcher(client=c).get_belong_board("600519"))
 
 
+class TestKplFetcherResearchReports(unittest.TestCase):
+    """研报 —— 接入 research_report_fetcher 的降级链首位。"""
+
+    # 取自 /research/research-field-list/600519 实测
+    PAYLOAD = {"items": [
+        {"id": "446328", "timestamp": "1784736000", "title": "需求根基稳固，市场化定价持续兑现",
+         "broker": "中邮证券", "rating": "买入"},
+        {"id": "446109", "timestamp": "1784476800", "title": "飞天茅台年内二次提价",
+         "broker": "群益证券", "rating": "中性"},
+    ]}
+
+    def _reports(self, payload=None, valid=True, max_count=10):
+        c = MagicMock()
+        c.is_credential_valid.return_value = valid
+        c.get.return_value = self.PAYLOAD if payload is None else payload
+        return KplFetcher(client=c).get_research_reports("600519", max_count=max_count)
+
+    def test_uses_field_list_not_field_excel(self) -> None:
+        """field-excel 只有评级分布和 3 条无标题明细，填不满研报条目契约。"""
+        c = MagicMock()
+        c.is_credential_valid.return_value = True
+        c.get.return_value = self.PAYLOAD
+        KplFetcher(client=c).get_research_reports("600519")
+        self.assertIn("research-field-list", c.get.call_args[0][0])
+
+    def test_contract_keys_match_tushare_shape(self) -> None:
+        """降级链会无差别消费各源结果，键必须与 Tushare 实现一致。"""
+        r = self._reports()[0]
+        self.assertEqual(
+            set(r.keys()),
+            {"title", "date", "broker", "rating", "abstract", "analyst", "eps", "classify"},
+        )
+
+    def test_fields_mapped(self) -> None:
+        r = self._reports()[0]
+        self.assertEqual(r["title"], "需求根基稳固，市场化定价持续兑现")
+        self.assertEqual(r["broker"], "中邮证券")
+        self.assertEqual(r["rating"], "买入")
+        self.assertEqual(len(r["date"]), 10)
+
+    def test_ratings_are_chinese_like_tushare(self) -> None:
+        """下游按 rating 文本统计 rating_summary，口径必须与既有源一致。"""
+        self.assertEqual([r["rating"] for r in self._reports()], ["买入", "中性"])
+
+    def test_duplicate_date_title_deduped(self) -> None:
+        payload = {"items": [self.PAYLOAD["items"][0], dict(self.PAYLOAD["items"][0])]}
+        self.assertEqual(len(self._reports(payload)), 1)
+
+    def test_blank_titles_skipped(self) -> None:
+        self.assertEqual(self._reports({"items": [{"title": "  ", "broker": "x"}]}), [])
+
+    def test_respects_max_count(self) -> None:
+        self.assertEqual(len(self._reports(max_count=1)), 1)
+
+    def test_fail_open_returns_empty_list(self) -> None:
+        """研报是增强信息，失败必须返回 [] 而不是抛异常打断基本面链路。"""
+        self.assertEqual(self._reports(valid=False), [])
+        c = MagicMock()
+        c.is_credential_valid.return_value = True
+        c.get.side_effect = KplRequestError("boom")
+        self.assertEqual(KplFetcher(client=c).get_research_reports("600519"), [])
+
+
 class TestKplFetcherSectorRankings(unittest.TestCase):
     """板块排行 —— 上游按强度排序，必须自行按涨跌幅重排。"""
 

@@ -3946,7 +3946,13 @@ class DataFetcherManager:
             from data_provider.research_report_fetcher import get_research_context
 
             ts_fetcher = self._get_fetcher_by_name("TushareFetcher")
-            payload = get_research_context(stock_code, max_count=max_count, tushare_fetcher=ts_fetcher)
+            kpl_fetcher = self._get_fetcher_by_name("KplFetcher")
+            payload = get_research_context(
+                stock_code,
+                max_count=max_count,
+                tushare_fetcher=ts_fetcher,
+                kpl_fetcher=kpl_fetcher,
+            )
         except Exception as exc:
             cost_ms = int((_time.time() - t0) * 1000)
             return self._build_fundamental_block(

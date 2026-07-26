@@ -198,10 +198,12 @@ def get_research_context(
     stock_code: str,
     max_count: int = 5,
     tushare_fetcher=None,
+    kpl_fetcher=None,
 ) -> Dict[str, Any]:
     """聚合研报+EPS 预测，返回适合 agent 消费的 context 块。
 
-    优先使用 Tushare report_rc（质量更高），失败时 fallback 到东财 reportapi。
+    降级链：KPL → Tushare report_rc → 东财 reportapi。
+    KPL 排在最前是因为 Tushare 代理站即将下线；三者任一有结果即停止下探。
 
     Returns:
         {
@@ -218,7 +220,16 @@ def get_research_context(
 
     # --- 研报列表：Tushare 优先，东财兜底 ---
     reports: List[Dict[str, Any]] = []
-    if tushare_fetcher is not None:
+    if kpl_fetcher is not None:
+        try:
+            kpl_reports = kpl_fetcher.get_research_reports(stock_code, max_count=max_count)
+            if kpl_reports:
+                reports = kpl_reports
+                source_chain.append("kpl_research_field_list")
+        except Exception as exc:
+            errors.append(f"kpl_research:{type(exc).__name__}")
+
+    if not reports and tushare_fetcher is not None:
         try:
             ts_reports = tushare_fetcher.get_research_reports(stock_code, max_count=max_count)
             if ts_reports:

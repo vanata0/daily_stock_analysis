@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] `scripts/refresh_stock_index.py --skip-fetch` 在 `data/stock_list_*.csv` 全部缺失时会静默用 JP/KR 种子数据重新生成索引并以退出码 0 结束，把 3 万余条的自动补全索引覆盖成数十条；现在改为前置校验并中止（退出码 2），仅部分缺失时给出会缺哪些市场的警告。
+- [改进] `scripts/refresh_stock_index.py` 在 TUSHARE_TOKEN 已配置但抓取失败（如接入地址下线、积分不足）时输出可操作提示，并说明运行时自动补全由 `STOCK_INDEX_REMOTE_UPDATE_ENABLED` 从 GitHub 拉取、不受该脚本失败影响。
 - [修复] KPL 资讯源在通用「搜索股票新闻」链路被误当作通用搜索引擎调用：`preference_only` 此前只在多维度检索处生效，其余三处遍历 provider 的位置漏加守卫，导致 KPL 收到不带股票代码的调用并反复报错。
 - [修复] KPL 资讯源不再被 API Key 健康度熔断：基类在同一 key 累计 3 次错误后即停止发放，而 KPL 只有一个占位 key 且其失败多为「本次请求不适用」（维度不支持、非 A 股代码），沿用该机制会让数次不适用调用把该源永久禁用；其真实可用性由凭证探针判定。
 - [新功能] 券商研报接入 KPL：`get_research_context` 的降级链扩展为 KPL → Tushare `report_rc` → 东财 `reportapi`，KPL 排在最前以应对 Tushare 代理站下线；任一环有结果即停止下探，单环异常仅记入 `errors` 不打断链路。

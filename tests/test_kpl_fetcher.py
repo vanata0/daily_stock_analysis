@@ -382,6 +382,71 @@ class TestKplFetcherSectorRankings(unittest.TestCase):
         self.assertIsNone(self._fetcher().get_concept_rankings(3))
 
 
+class TestKplFetcherMarketStats(unittest.TestCase):
+    """大盘统计 —— 成交额单位换算错了会让下游读数差 10000 倍。"""
+
+    # 取自 /mood/market-daban-snapshot 实测（2026-07-24）
+    SNAPSHOT = {
+        "rising_count": 555, "falling_count": 4939, "flat_count": 31,
+        "limit_up_count": 40, "limit_down_count": 24,
+        "market_turnover_wan": 193114002,
+    }
+
+    def _stats(self, payload=None, valid=True):
+        c = MagicMock()
+        c.is_credential_valid.return_value = valid
+        c.get.return_value = self.SNAPSHOT if payload is None else payload
+        return KplFetcher(client=c).get_market_stats()
+
+    def test_contract_keys_present(self) -> None:
+        s = self._stats()
+        self.assertEqual(
+            set(s.keys()),
+            {"up_count", "down_count", "flat_count",
+             "limit_up_count", "limit_down_count", "total_amount"},
+        )
+
+    def test_counts_mapped(self) -> None:
+        s = self._stats()
+        self.assertEqual(s["up_count"], 555)
+        self.assertEqual(s["down_count"], 4939)
+        self.assertEqual(s["flat_count"], 31)
+        self.assertEqual(s["limit_up_count"], 40)
+        self.assertEqual(s["limit_down_count"], 24)
+
+    def test_turnover_converted_wan_to_yi(self) -> None:
+        """上游为万元，DSA 与 TickFlow 一致按亿元返回。"""
+        self.assertEqual(self._stats()["total_amount"], 19311.4)
+
+    def test_turnover_magnitude_is_plausible(self) -> None:
+        """A 股单日成交额落在 5000~30000 亿区间，可挡住量级错误。"""
+        self.assertTrue(5000 <= self._stats()["total_amount"] <= 30000)
+
+    def test_missing_turnover_defaults_to_zero(self) -> None:
+        payload = dict(self.SNAPSHOT)
+        payload.pop("market_turnover_wan")
+        self.assertEqual(self._stats(payload)["total_amount"], 0.0)
+
+    def test_none_when_no_breadth(self) -> None:
+        """连涨跌家数都没有说明数据无效，返回 None 触发降级。"""
+        self.assertIsNone(self._stats({"market_turnover_wan": 1}))
+
+    def test_none_when_unavailable(self) -> None:
+        self.assertIsNone(self._stats(valid=False))
+
+    def test_none_on_upstream_error(self) -> None:
+        c = MagicMock()
+        c.is_credential_valid.return_value = True
+        c.get.side_effect = KplRequestError("boom")
+        self.assertIsNone(KplFetcher(client=c).get_market_stats())
+
+    def test_main_indices_intentionally_not_implemented(self) -> None:
+        """上游 global-index 只有海外指数/期货/商品/汇率，无 A 股指数。"""
+        c = MagicMock()
+        c.is_credential_valid.return_value = True
+        self.assertIsNone(KplFetcher(client=c).get_main_indices("cn"))
+
+
 class TestKplFetcherLimitUpPool(unittest.TestCase):
     """涨停池 —— 上游按连板数分档，需逐档聚合。"""
 

@@ -336,6 +336,55 @@ class KplFetcher(BaseFetcher):
         logger.info("[KplFetcher] 板块排行获取成功: %d 个板块", len(rows))
         return top, bottom
 
+    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+        """获取市场涨跌统计。
+
+        用 /mood/market-daban-snapshot：它一条就覆盖契约要求的全部 6 个字段，
+        而 /market-stats/mood-num-count 缺 flat_count、/market-stats/zhangfu-detail
+        缺成交额。
+
+        成交额单位换算依据：该端点的 ``market_turnover_wan`` 与
+        ``mood-num-count.market_turnover`` 数值完全相同，而前者字段名显式带
+        ``_wan``，故上游为「万元」；DSA 与 TickFlow 一致按「亿元」返回。
+
+        Returns:
+            {"up_count", "down_count", "flat_count", "limit_up_count",
+             "limit_down_count", "total_amount"(亿元)}；失败返回 None
+        """
+        if not self.is_available():
+            return None
+        try:
+            data = self._client.get("/mood/market-daban-snapshot")
+        except KplError as exc:
+            logger.warning("[KplFetcher] 获取大盘统计失败: %s", exc)
+            return None
+
+        up = _to_int(data.get("rising_count"))
+        down = _to_int(data.get("falling_count"))
+        if up is None and down is None:
+            logger.debug("[KplFetcher] 大盘统计无涨跌家数，判为无效")
+            return None
+
+        turnover_wan = _to_float(data.get("market_turnover_wan"))
+        stats = {
+            "up_count": up or 0,
+            "down_count": down or 0,
+            "flat_count": _to_int(data.get("flat_count")) or 0,
+            "limit_up_count": _to_int(data.get("limit_up_count")) or 0,
+            "limit_down_count": _to_int(data.get("limit_down_count")) or 0,
+            "total_amount": round(turnover_wan / 1e4, 2) if turnover_wan else 0.0,
+        }
+        logger.info(
+            "[KplFetcher] 大盘统计: 涨%d 跌%d 平%d 成交%.0f亿",
+            stats["up_count"], stats["down_count"], stats["flat_count"],
+            stats["total_amount"],
+        )
+        return stats
+
+    # 说明：未实现 get_main_indices。上游 /market-stats/global-index 只有海外指数
+    # （道指/纳指/恒生/日经）、期货、商品与汇率，没有上证/深证/创业板等 A 股指数，
+    # 无法满足 get_main_indices(region="cn") 的语义。
+
     def get_limit_up_pool(
         self,
         date: Optional[str] = None,
@@ -416,3 +465,8 @@ def _to_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+def _to_int(value: Any) -> Optional[int]:
+    """把上游可能给出的 str/float/None 统一成 int，无法解析返回 None。"""
+    f = _to_float(value)
+    return int(f) if f is not None else None

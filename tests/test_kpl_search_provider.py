@@ -76,6 +76,38 @@ class TestKplProviderSelection(unittest.TestCase):
         client.is_credential_valid.side_effect = RuntimeError("boom")
         self.assertFalse(KplSearchProvider(client).is_available)
 
+    def test_all_provider_loops_skip_preference_only(self) -> None:
+        """回归：真实分析里 KPL 被通用「搜索股票新闻」路径当普通引擎调用过。
+
+        那条路径不传 stock_code，KPL 只能报「仅支持 A 股 6 位代码，收到 None」。
+        所有遍历 self._providers 的地方都必须跳过 preference_only，而不只是
+        多维度检索那一处。
+        """
+        import inspect
+        src = inspect.getsource(SearchService)
+        loops = src.count("for provider in self._providers:")
+        guards = src.count('getattr(provider, "preference_only", False)')
+        self.assertEqual(guards, loops, "存在未加 preference_only 守卫的 provider 遍历")
+
+    def test_preference_guard_tolerates_ducktyped_providers(self) -> None:
+        """既有测试用 SimpleNamespace 造 provider，属性访问必须用 getattr。"""
+        import inspect
+        src = inspect.getsource(SearchService)
+        self.assertNotIn("provider.preference_only", src)
+
+    def test_key_health_circuit_breaker_bypassed(self) -> None:
+        """KPL 的失败多是「本次不适用」，不该累积成 key 熔断。
+
+        基类同一 key 累计 3 次错误就停止发放，会让 KPL 被永久禁用；它只有一个
+        占位 key，真实可用性由凭证探针负责。
+        """
+        p = _provider(ANNOUNCEMENTS)
+        for _ in range(5):
+            p._record_error("local")
+        self.assertEqual(p._get_next_key(), "local")
+        r = p.search("q", max_results=2, stock_code="600519", dimension="announcements")
+        self.assertTrue(r.success, "多次错误后仍应能正常取数")
+
 
 class TestAnnouncementsDimension(unittest.TestCase):
     """公告维度 —— 替换 Bocha 的核心目标。"""

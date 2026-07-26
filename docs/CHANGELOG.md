@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] KPL 资讯源在通用「搜索股票新闻」链路被误当作通用搜索引擎调用：`preference_only` 此前只在多维度检索处生效，其余三处遍历 provider 的位置漏加守卫，导致 KPL 收到不带股票代码的调用并反复报错。
+- [修复] KPL 资讯源不再被 API Key 健康度熔断：基类在同一 key 累计 3 次错误后即停止发放，而 KPL 只有一个占位 key 且其失败多为「本次请求不适用」（维度不支持、非 A 股代码），沿用该机制会让数次不适用调用把该源永久禁用；其真实可用性由凭证探针判定。
 - [新功能] 券商研报接入 KPL：`get_research_context` 的降级链扩展为 KPL → Tushare `report_rc` → 东财 `reportapi`，KPL 排在最前以应对 Tushare 代理站下线；任一环有结果即停止下探，单环异常仅记入 `errors` 不打断链路。
 - [新功能] 情报检索新增 KPL 资讯源，公告维度由 Bocha 改走 KPL：该维度此前硬编码指定 Bocha（因 SearXNG 公告结果无 publishedDate 会被 `strict_freshness` 全部过滤），Bocha token 过期后会直接归零；KPL 公告接口自带时间戳与 PDF 链接，可满足时效过滤。同时覆盖个股快讯维度，并过滤「公告精选」「股市避雷针」等会罗列大量无关个股的全市场汇总条目。
 - [改进] 搜索 Provider 新增 `preference_only` 标志：结构化数据源（如 KPL）只在维度显式指定时被选用，不参与轮询，避免挤占研报深度分析等它覆盖不了的维度；KPL 不可用时公告维度自动回落到轮询中的通用搜索引擎。

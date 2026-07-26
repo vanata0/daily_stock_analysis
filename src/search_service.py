@@ -2155,6 +2155,17 @@ class KplSearchProvider(BaseSearchProvider):
             logger.warning("[KPL] 可用性探测异常: %s", exc)
             return False
 
+    def _get_next_key(self) -> Optional[str]:
+        """始终返回占位 key，绕开基类的 key 健康度熔断。
+
+        基类会在同一个 key 累计 3 次错误后停止发放，进而让整个 provider 不可用。
+        对按 key 计费的引擎这是对的，但 KPL 只有一个占位 key，而它的失败多是
+        「本次请求不适用」（如维度不支持、非 A 股代码），不代表服务本身有问题。
+        沿用那套机制会让几次不适用调用把 KPL 永久熔断。真实可用性由
+        is_available 的凭证探针负责。
+        """
+        return "local"
+
     def search(
         self,
         query: str,
@@ -4020,7 +4031,7 @@ class SearchService:
             best_ranked_response: Optional[SearchResponse] = None
             best_ranked_stats: Optional[Dict[str, int]] = None
             for provider in self._providers:
-                if not provider.is_available:
+                if not provider.is_available or getattr(provider, "preference_only", False):
                     continue
 
                 search_kwargs: Dict[str, Any] = {}
@@ -4242,9 +4253,9 @@ class SearchService:
         
         # 依次尝试各个搜索引擎
         for provider in self._providers:
-            if not provider.is_available:
+            if not provider.is_available or getattr(provider, "preference_only", False):
                 continue
-            
+
             response = provider.search(query, max_results=5)
             
             if response.success:
@@ -4440,7 +4451,8 @@ class SearchService:
                     available_providers[provider_index % len(available_providers)],
                 )
             else:
-                rotation = [p for p in available_providers if not p.preference_only]
+                rotation = [p for p in available_providers
+                            if not getattr(p, "preference_only", False)]
                 pool = rotation or available_providers
                 provider = pool[provider_index % len(pool)]
             provider_index += 1
@@ -4694,7 +4706,7 @@ class SearchService:
             
             # 依次尝试各个搜索引擎
             for provider in self._providers:
-                if not provider.is_available:
+                if not provider.is_available or getattr(provider, "preference_only", False):
                     continue
                 
                 try:

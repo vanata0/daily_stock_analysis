@@ -80,6 +80,7 @@ class KplFetcher(BaseFetcher):
         self._client = client or KplHttpClient(
             base_url=resolved_base or "http://127.0.0.1:8010",
             timeout=resolved_timeout or 10,
+            on_credential_expired=_notify_credential_expired,
         )
         self.priority = resolved_priority if resolved_priority is not None else -2
 
@@ -537,3 +538,34 @@ def _epoch_to_date(value: Any) -> Optional[str]:
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
     except (OSError, OverflowError, ValueError):
         return None
+
+def _notify_credential_expired(reason: str) -> None:
+    """KPL 凭证失效时推送系统错误通知。
+
+    走 DSA 既有的 ``system_error`` 路由，渠道由 NOTIFICATION_SYSTEM_ERROR_CHANNELS
+    控制——未配置则只留日志，符合「不配置也可运行」。dedup_key 固定，让通知层
+    自带的去重与冷却接管，避免每次探针 TTL 到期都重复推送。
+
+    整体 fail-open：通知栈不可用不能影响数据源降级本身。
+    """
+    try:
+        from src.notification import NotificationService
+
+        content = (
+            "## ⚠️ KPL 数据源凭证失效\n\n"
+            f"{reason}\n\n"
+            "**影响**：KPL 已自动退出数据源调用链，A 股行情/板块/资讯将回落到"
+            "东财、AkShare 等既有数据源，分析不会中断，但数据质量可能下降。\n\n"
+            "**处理**：重新抓包更新 kpl-unified-client 的 `.env`"
+            "（KPL_USER_ID / KPL_TOKEN / KPL_DEVICE_ID），然后重启该服务。"
+        )
+        NotificationService().send(
+            content,
+            route_type="system_error",
+            severity="error",
+            dedup_key="kpl_credential_expired",
+            cooldown_key="kpl_credential_expired",
+        )
+        logger.info("[KplFetcher] 已推送凭证失效告警")
+    except Exception as exc:
+        logger.warning("[KplFetcher] 推送凭证失效告警失败: %s", exc)

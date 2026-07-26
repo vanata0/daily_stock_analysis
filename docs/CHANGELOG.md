@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] KPL 凭证失效时推送系统错误告警：探针判定失效后经既有 `system_error` 路由通知（渠道由 `NOTIFICATION_SYSTEM_ERROR_CHANNELS` 控制，未配置则仅留日志），带固定 dedup key 复用通知层去重与冷却，仅在「可用→失效」跃迁时触发，休市空数据不误报，告警链路本身异常不影响数据源降级。
 - [修复] `scripts/refresh_stock_index.py --skip-fetch` 在 `data/stock_list_*.csv` 全部缺失时会静默用 JP/KR 种子数据重新生成索引并以退出码 0 结束，把 3 万余条的自动补全索引覆盖成数十条；现在改为前置校验并中止（退出码 2），仅部分缺失时给出会缺哪些市场的警告。
 - [改进] `scripts/refresh_stock_index.py` 在 TUSHARE_TOKEN 已配置但抓取失败（如接入地址下线、积分不足）时输出可操作提示，并说明运行时自动补全由 `STOCK_INDEX_REMOTE_UPDATE_ENABLED` 从 GitHub 拉取、不受该脚本失败影响。
 - [修复] KPL 资讯源在通用「搜索股票新闻」链路被误当作通用搜索引擎调用：`preference_only` 此前只在多维度检索处生效，其余三处遍历 provider 的位置漏加守卫，导致 KPL 收到不带股票代码的调用并反复报错。

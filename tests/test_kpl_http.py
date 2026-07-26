@@ -204,5 +204,62 @@ class TestKplDateConversion(unittest.TestCase):
             self.assertIsNone(kpl_date_to_iso(bad), f"应拒绝 {bad!r}")
 
 
+class TestCredentialExpiredCallback(unittest.TestCase):
+    """凭证失效告警回调 —— 让静默失效变成能被人看到的事件。"""
+
+    def _client(self, fired):
+        return KplHttpClient(on_credential_expired=lambda reason: fired.append(reason))
+
+    def test_callback_fires_on_trading_day_expiry(self) -> None:
+        fired = []
+        c = self._client(fired)
+        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
+                patch.object(c, "_is_trading_day", return_value=True):
+            self.assertFalse(c.is_credential_valid())
+        self.assertEqual(len(fired), 1)
+        self.assertIn("rise=0", fired[0])
+
+    def test_callback_not_fired_when_healthy(self) -> None:
+        fired = []
+        c = self._client(fired)
+        with patch.object(c, "get", return_value=HEALTHY_BREADTH):
+            c.is_credential_valid()
+        self.assertEqual(fired, [])
+
+    def test_callback_not_fired_on_non_trading_day(self) -> None:
+        """休市空数据不是失效，不能误报。"""
+        fired = []
+        c = self._client(fired)
+        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
+                patch.object(c, "_is_trading_day", return_value=False):
+            c.is_credential_valid()
+        self.assertEqual(fired, [])
+
+    def test_callback_fires_once_across_ttl_expiry(self) -> None:
+        """探针 TTL 每 5 分钟到期一次，不能每次都重复告警。"""
+        fired = []
+        c = self._client(fired)
+        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
+                patch.object(c, "_is_trading_day", return_value=True):
+            for _ in range(4):
+                c.is_credential_valid(force=True)
+        self.assertEqual(len(fired), 1, "处于失效态时不应重复告警")
+
+    def test_callback_exception_does_not_break_probe(self) -> None:
+        """告警栈挂了不能影响数据源降级本身。"""
+        def boom(_reason):
+            raise RuntimeError("notification stack down")
+        c = KplHttpClient(on_credential_expired=boom)
+        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
+                patch.object(c, "_is_trading_day", return_value=True):
+            self.assertFalse(c.is_credential_valid())
+
+    def test_no_callback_configured_is_safe(self) -> None:
+        c = KplHttpClient()
+        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
+                patch.object(c, "_is_trading_day", return_value=True):
+            self.assertFalse(c.is_credential_valid())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -32,7 +32,7 @@ import logging
 import threading
 import time
 from datetime import date, datetime
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import requests
 
@@ -74,10 +74,18 @@ class KplHttpClient:
         base_url: str = DEFAULT_API_BASE,
         timeout: int = DEFAULT_TIMEOUT,
         probe_ttl_seconds: int = _PROBE_TTL_SECONDS,
+        on_credential_expired: Optional[Callable[[str], None]] = None,
     ) -> None:
+        """
+        Args:
+            on_credential_expired: 探针判定凭证失效时回调，入参为可读原因。
+                本类只负责判定与触发，具体怎么告警由上层决定，避免 transport
+                依赖通知栈。回调异常不会影响探针结论。
+        """
         self._base_url = (base_url or DEFAULT_API_BASE).rstrip("/")
         self._timeout = timeout if timeout and timeout > 0 else DEFAULT_TIMEOUT
         self._probe_ttl = probe_ttl_seconds
+        self._on_credential_expired = on_credential_expired
         # requests.Session 复用连接；DSA 是多线程取数，Session 本身线程安全，
         # 但探针缓存需要自己加锁。
         self._session = requests.Session()
@@ -174,12 +182,32 @@ class KplHttpClient:
             )
             return True
 
-        logger.error(
-            "[KPL] 凭证疑似失效：交易日探针涨跌家数为空 (rise=%d fall=%d)。"
-            "上游接口在凭证过期时会静默返回空数据，请重新抓包更新 kpl-unified-client 的 .env",
-            rise, fall,
+        reason = (
+            f"交易日探针涨跌家数为空 (rise={rise} fall={fall})。"
+            "上游接口在凭证过期时会静默返回空数据，"
+            "请重新抓包更新 kpl-unified-client 的 .env"
         )
+        logger.error("[KPL] 凭证疑似失效：%s", reason)
+        self._fire_credential_expired(reason)
         return False
+
+    def _fire_credential_expired(self, reason: str) -> None:
+        """通知上层凭证已失效。
+
+        只在「上一次判定为可用」时触发，避免探针 TTL 每 5 分钟到期后
+        反复告警；回调本身异常一律吞掉并记日志，不能影响探针结论。
+        """
+        callback = self._on_credential_expired
+        if callback is None:
+            return
+        with self._lock:
+            was_ok = self._probe_ok
+        if was_ok is False:
+            return  # 已经处于失效态，不重复告警
+        try:
+            callback(reason)
+        except Exception as exc:
+            logger.warning("[KPL] 凭证失效回调执行失败: %s", exc)
 
     def _is_trading_day(self, day: Optional[date] = None) -> bool:
         """判断是否 A 股交易日（周末 + KPL 节假日表）。"""

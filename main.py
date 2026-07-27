@@ -1118,6 +1118,12 @@ def start_api_server(host: str, port: int, config: Config) -> None:
 
     probe = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
     try:
+        # 必须与 uvicorn 的实际绑定行为保持一致：uvicorn 走 asyncio create_server，
+        # 在 POSIX 上默认 reuse_address=True。探测端不设 SO_REUSEADDR 会比真实绑定
+        # 更严格——上一个进程退出时若仍有 TIME_WAIT / FIN_WAIT 状态的连接残留，
+        # 探测就报端口不可用，而 uvicorn 本可以正常绑定。实测重启带活跃外部连接的
+        # 服务时会因此空转十余次 systemd 重启才自愈。
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind((host, port))
     except OSError as exc:
         raise RuntimeError(f"FastAPI port is not available: {host}:{port}") from exc

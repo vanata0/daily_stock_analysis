@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] Web 服务端口探测未设置 `SO_REUSEADDR`，比 uvicorn 的实际绑定更严格（uvicorn 走 asyncio `create_server`，POSIX 上默认 `reuse_address=True`）：上一个进程退出时若仍有 keep-alive 连接残留，探测会误报「FastAPI port is not available」，systemd 因此反复重启空转（实测连续失败 12 次、约 110 秒才自愈）。改为与 uvicorn 行为一致；端口真被占用（已存在 LISTEN）时内核仍会拒绝，不影响冲突检测。
 - [改进] 个股资金流主源由迈瑞数据切换为 KPL，动机是可持续性而非口径优劣：Tushare 代理站下线后迈瑞是唯一的个股资金流来源，KPL 提供一条不依赖将失效凭证的通路。迈瑞保留为兜底，链路为 KPL → 迈瑞 → 东财。资金流字段契约不变（`main_net_inflow`/`inflow_5d`/`inflow_10d`），原迈瑞的四档明细字段无下游消费方。此前版本的变更说明曾以 Tushare `moneyflow`（特大单+大单）对拍得出「迈瑞接近随机、KPL 明显更准」的结论，该结论不成立：改用 Tushare 自身的 `net_mf_amount` 字段结果完全反转，同一基准给出两个相反答案，说明其主力口径未经校准，两组数字均不能作为准确性证据。
 - [修复] KPL 资金流把「无主力资金覆盖」误当成「净流入为零」：北交所等标的当日有真实成交（`turnover` 与日线成交额一致）但主力买卖字段均为 0，此前会作为真值 0 返回，使下游判为中性而非回落到其它数据源；现在识别该情形并跳过该交易日。同时将回溯余量由 8 个日历日提高到 20 个，避免 10 个交易日跨春节连休时凑不满样本导致 `inflow_10d` 静默为空。
 - [测试] 新增 `scripts/check_capital_flow_parity.py` 固化资金流口径对拍，用于在 Tushare 接入下线前留存基线；因基准口径本身未经校准，其输出仅供参考，不作为数据源优劣判据。

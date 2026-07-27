@@ -269,13 +269,20 @@ class MainScheduleModeTestCase(unittest.TestCase):
         config = self._make_config(log_level="INFO")
 
         class BusySocket:
+            def __init__(self):
+                self.sockopts = []
+
+            def setsockopt(self, level, optname, value):
+                self.sockopts.append((level, optname, value))
+
             def bind(self, address):
                 raise OSError("address already in use")
 
             def close(self):
                 pass
 
-        with patch("socket.socket", return_value=BusySocket()) as socket_factory, \
+        busy = BusySocket()
+        with patch("socket.socket", return_value=busy) as socket_factory, \
              patch("threading.Thread") as thread_cls:
             with self.assertRaises(RuntimeError) as caught:
                 main.start_api_server("127.0.0.1", 8000, config)
@@ -283,6 +290,15 @@ class MainScheduleModeTestCase(unittest.TestCase):
         socket_factory.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
         self.assertIn("127.0.0.1:8000", str(caught.exception))
         thread_cls.assert_not_called()
+        # 探测必须与 uvicorn 的实际绑定行为一致（asyncio create_server 在 POSIX
+        # 上默认 reuse_address=True）。不设 SO_REUSEADDR 会比真实绑定更严格：
+        # 上个进程退出时若仍有 keep-alive 连接残留，探测就误报端口不可用，
+        # 导致 systemd 反复重启空转。真正被占用（已有 LISTEN）时内核仍会拒绝。
+        self.assertIn(
+            (socket.SOL_SOCKET, socket.SO_REUSEADDR, 1),
+            busy.sockopts,
+            "端口探测必须设置 SO_REUSEADDR",
+        )
 
     def test_start_api_server_fails_when_uvicorn_background_startup_fails(self) -> None:
         config = self._make_config(log_level="INFO")
@@ -305,6 +321,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
             Server = _FakeUvicornServer
 
         class _UnusedSocket:
+            def setsockopt(self, level, optname, value):
+                pass
+
             def bind(self, address):
                 pass
 
@@ -346,6 +365,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     raise TypeError("install_signal_handlers is unsupported")
 
         class _UnusedSocket:
+            def setsockopt(self, level, optname, value):
+                pass
+
             def bind(self, address):
                 pass
 

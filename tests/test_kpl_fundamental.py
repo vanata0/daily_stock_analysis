@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""KPL 个股资金流：取数实现与降级链。
+"""KPL 基本面取数：资金流、成长/业绩/机构三块，及其降级链。
 
 接入动机是**可持续性**：Tushare 代理站下线后 Mairuiapi 是唯一的个股资金流
 来源，KPL 提供一条不依赖将失效凭证的通路。
@@ -248,3 +248,199 @@ class TestCapitalFlowFallbackChain(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestKplFundamentalBundle(unittest.TestCase):
+    """KPL 成长/业绩/机构三块取数。"""
+
+    def _fetcher(self, finance=None, reminder=None, holders=None):
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+
+        def fake_get(path, params=None):
+            if "finance-info" in path:
+                return finance if finance is not None else {}
+            if "stock-big-reminder" in path:
+                return reminder if reminder is not None else {}
+            if "gudong-info-ten-by-date" in path:
+                return holders if holders is not None else {}
+            return {}
+
+        client.get.side_effect = fake_get
+        return KplFetcher(client=client)
+
+    def test_growth_strips_percent_suffix(self) -> None:
+        """上游把数值与单位放在同一字符串里（"-19.59%"），直接 float() 会失败。"""
+        f = self._fetcher(finance={
+            "reports": [{"YLNL_JZCSYL": "2.75%", "YLNL_XSMLL": "6.64%"}],
+            "yoy_reports": [{"GJZB_YYSR": "-19.59%", "GJZB_JLR": "-35.02%"}],
+        })
+        g = f.get_fundamental_bundle("000977")["growth"]
+        self.assertAlmostEqual(g["revenue_yoy"], -19.59)
+        self.assertAlmostEqual(g["net_profit_yoy"], -35.02)
+        self.assertAlmostEqual(g["roe"], 2.75)
+        self.assertAlmostEqual(g["gross_margin"], 6.64)
+
+    def test_growth_missing_field_stays_none_for_fallback(self) -> None:
+        """银行股没有销售毛利率，该字段须留 None 让 AkShare 兜底，不能猜。"""
+        f = self._fetcher(finance={
+            "reports": [{"YLNL_JZCSYL": "2.21%"}],
+            "yoy_reports": [{"GJZB_YYSR": "16.21%"}],
+        })
+        g = f.get_fundamental_bundle("601398")["growth"]
+        self.assertIsNone(g["gross_margin"])
+        self.assertAlmostEqual(g["revenue_yoy"], 16.21)
+
+    def test_earnings_rejects_non_forecast_titles(self) -> None:
+        """type=5 是财报公告混合流，不筛标题会把年报当成业绩预告。
+
+        实测 6 只标的首条分别是业绩预告/季度报告/半年度报告摘要/H股公告/
+        年度报告，只有 2/6 真是预告。
+        """
+        f = self._fetcher(reminder={"items": [
+            {"title": "2025年年度报告", "date": "2026-04-28",
+             "raw": {"type": 5, "tag": 1}},
+            {"title": "贵州茅台2026年第一季度报告", "date": "2026-04-25",
+             "raw": {"type": 5, "tag": 1}},
+        ]})
+        self.assertEqual(f.get_fundamental_bundle("600519")["earnings"], {})
+
+    def test_earnings_accepts_real_forecast(self) -> None:
+        f = self._fetcher(reminder={"items": [
+            {"title": "2025年年度报告", "date": "2026-04-28", "raw": {"type": 5, "tag": 1}},
+            {"title": "2026年半年度业绩预告", "date": "2026-07-08", "raw": {"type": 5, "tag": 1}},
+        ]})
+        e = f.get_fundamental_bundle("000977")["earnings"]
+        self.assertIn("业绩预告", e["forecast_summary"])
+        self.assertIn("2026-07-08", e["forecast_summary"])
+
+    def test_earnings_ignores_non_financial_tag(self) -> None:
+        """tag=2 是减持类公告，即使标题恰好含关键词也不能当业绩预告。"""
+        f = self._fetcher(reminder={"items": [
+            {"title": "关于持股5%以上股东减持股份的预披露公告", "date": "2026-07-01",
+             "raw": {"type": 5, "tag": 2}},
+        ]})
+        self.assertEqual(f.get_fundamental_bundle("000977")["earnings"], {})
+
+    def test_holder_change_is_percent_not_shares(self) -> None:
+        """上游 change_from_last 是较上期变化百分比，不是万股。
+
+        已用相邻两期持股交叉验算：3526.77→3383.30 万股（-143.47 万股）对应
+        -4.07，正是 -4.07%。按万股解读会得到完全错误的量级。
+        """
+        f = self._fetcher(holders={"items": [
+            {"holding_shares_wan": "3383.30", "change_from_last": "-4.07"},
+        ]})
+        i = f.get_fundamental_bundle("000977")["institution"]
+        # 上期 = 3383.30 / (1 - 0.0407) = 3526.77，合计口径下变化率仍是 -4.07%
+        self.assertAlmostEqual(i["top10_holder_change"], -4.07, places=2)
+
+    def test_holder_change_handles_unchanged_and_new_entries(self) -> None:
+        """取值有三种形态：数值 / "不变" / "新进"（上期持股为 0）。"""
+        f = self._fetcher(holders={"items": [
+            {"holding_shares_wan": "1000", "change_from_last": "不变"},
+            {"holding_shares_wan": "100", "change_from_last": "新进"},
+        ]})
+        i = f.get_fundamental_bundle("000977")["institution"]
+        # 上期合计 1000，本期合计 1100 → +10%
+        self.assertAlmostEqual(i["top10_holder_change"], 10.0, places=4)
+
+    def test_holder_falls_back_to_earlier_quarter(self) -> None:
+        """最新报告期常未披露（半年报要到 8 月底），须往前找到有数据的一期。"""
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+        calls = []
+
+        def fake_get(path, params=None):
+            if "gudong-info-ten-by-date" not in path:
+                return {}
+            day = (params or {}).get("day")
+            calls.append(day)
+            if len(calls) == 1:
+                return {"items": []}      # 最新一期尚未披露
+            return {"items": [{"holding_shares_wan": "500", "change_from_last": "不变"}]}
+
+        client.get.side_effect = fake_get
+        i = KplFetcher(client=client).get_fundamental_bundle("000977")["institution"]
+        self.assertIsNotNone(i.get("top10_holder_change"))
+        self.assertGreaterEqual(len(calls), 2, "首期为空时必须继续回溯")
+        self.assertEqual(i["top10_report_date"], calls[1])
+
+    def test_unavailable_returns_none(self) -> None:
+        client = MagicMock()
+        client.is_credential_valid.return_value = False
+        self.assertIsNone(KplFetcher(client=client).get_fundamental_bundle("000977"))
+
+    def test_non_a_share_rejected(self) -> None:
+        for bad in ("AAPL", "00700", ""):
+            self.assertIsNone(self._fetcher().get_fundamental_bundle(bad))
+
+    def test_single_endpoint_failure_does_not_lose_other_blocks(self) -> None:
+        """三块各自独立取数，一块失败不能拖掉其它两块。"""
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+
+        def fake_get(path, params=None):
+            if "finance-info" in path:
+                raise KplRequestError("finance down")
+            if "stock-big-reminder" in path:
+                return {"items": [{"title": "2026年半年度业绩预告", "date": "2026-07-08",
+                                   "raw": {"type": 5, "tag": 1}}]}
+            return {"items": [{"holding_shares_wan": "500", "change_from_last": "不变"}]}
+
+        client.get.side_effect = fake_get
+        b = KplFetcher(client=client).get_fundamental_bundle("000977")
+        self.assertEqual(b["growth"], {})
+        self.assertIn("业绩预告", b["earnings"]["forecast_summary"])
+        self.assertIsNotNone(b["institution"]["top10_holder_change"])
+
+
+class TestBundleMergePrefersKplKeepsAkshare(unittest.TestCase):
+    """合并策略：KPL 优先补空，AkShare 结果完整保留。"""
+
+    def _adapter(self):
+        from data_provider.fundamental_adapter import AkshareFundamentalAdapter
+
+        a = AkshareFundamentalAdapter()
+        a._kpl_fetcher = None
+        return a
+
+    def test_kpl_only_fills_missing_fields(self) -> None:
+        """AkShare 已有值的字段不被 KPL 覆盖。"""
+        a = self._adapter()
+        result = {
+            "growth": {"revenue_yoy": 11.0, "roe": None},
+            "earnings": {}, "institution": {}, "source_chain": [], "errors": [],
+        }
+        kpl = {"growth": {"revenue_yoy": 99.0, "roe": 2.75},
+               "earnings": {}, "institution": {}}
+        with patch.object(a, "_get_fundamental_bundle_kpl", return_value=kpl):
+            a._merge_bundle_kpl("000977", result)
+        self.assertEqual(result["growth"]["revenue_yoy"], 11.0, "不得覆盖 AkShare 已有值")
+        self.assertEqual(result["growth"]["roe"], 2.75, "空字段应由 KPL 补上")
+        self.assertIn("bundle:kpl", result["source_chain"])
+
+    def test_kpl_absent_leaves_akshare_result_untouched(self) -> None:
+        a = self._adapter()
+        result = {"growth": {"revenue_yoy": 11.0}, "earnings": {}, "institution": {},
+                  "source_chain": [], "errors": []}
+        with patch.object(a, "_get_fundamental_bundle_kpl", return_value=None):
+            a._merge_bundle_kpl("000977", result)
+        self.assertEqual(result["growth"], {"revenue_yoy": 11.0})
+        self.assertNotIn("bundle:kpl", result["source_chain"])
+
+    def test_kpl_disabled_does_not_construct_fetcher(self) -> None:
+        from types import SimpleNamespace
+
+        a = self._adapter()
+        with patch("src.config.get_config", return_value=SimpleNamespace(kpl_enabled=False)):
+            self.assertIsNone(a._get_fundamental_bundle_kpl("000977"))
+        self.assertIsNone(a._kpl_fetcher)
+
+    def test_kpl_exception_is_swallowed(self) -> None:
+        from types import SimpleNamespace
+
+        a = self._adapter()
+        with patch("src.config.get_config", return_value=SimpleNamespace(kpl_enabled=True)), \
+                patch("data_provider.kpl_fetcher.KplFetcher", side_effect=RuntimeError("boom")):
+            self.assertIsNone(a._get_fundamental_bundle_kpl("000977"))

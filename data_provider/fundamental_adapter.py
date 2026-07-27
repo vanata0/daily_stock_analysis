@@ -414,9 +414,65 @@ class AkshareFundamentalAdapter:
                 result["institution"]["top10_holder_change"] = holder_change
                 result["source_chain"].append(f"top10:{top10_source}")
 
+        self._merge_bundle_kpl(stock_code, result)
+
         has_content = bool(result["growth"] or result["earnings"] or result["institution"])
         result["status"] = "partial" if has_content else "not_supported"
         return result
+
+    def _merge_bundle_kpl(self, stock_code: str, result: Dict[str, Any]) -> None:
+        """用 KPL 数据覆盖三块里的缺失字段（KPL 优先，AkShare 兜底）。
+
+        AkShare 走「无参拉全市场默认报告期 + 本地捞行 + 关键词猜列名」，实测
+        常常拿到了行却提取出全 None；KPL 按股票代码直查、字段名固定。因此
+        KPL 排在前面，但**不删除任何 AkShare 候选**：KPL 未启用、服务不可达、
+        凭证失效或某字段缺失时，该字段仍由上面已经跑完的 AkShare 结果承担。
+
+        逐字段合并而非整块替换——KPL 拿到 revenue_yoy 但 gross_margin 为空时
+        （如银行股没有销售毛利率），后者仍可保留 AkShare 的值。
+
+        整体 fail-open：任何异常都只记日志，不影响已有的 AkShare 结果。
+        """
+        blocks = self._get_fundamental_bundle_kpl(stock_code)
+        if not blocks:
+            return
+
+        merged: List[str] = []
+        for block in ("growth", "earnings", "institution"):
+            incoming = blocks.get(block) or {}
+            if not isinstance(incoming, dict):
+                continue
+            target = result.setdefault(block, {})
+            for key, value in incoming.items():
+                if value is None or value == "":
+                    continue
+                if target.get(key) is None:
+                    target[key] = value
+                    merged.append(f"{block}.{key}")
+        if merged:
+            result["source_chain"].append("bundle:kpl")
+            logger.debug("kpl bundle filled %s for %s", ",".join(merged), stock_code)
+
+    def _get_fundamental_bundle_kpl(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """Fetch growth / earnings / institution blocks from the KPL data source.
+
+        Returns None when KPL is disabled or unavailable so the caller keeps
+        whatever AkShare already produced.
+        """
+        try:
+            from src.config import get_config
+
+            if not getattr(get_config(), "kpl_enabled", False):
+                return None
+
+            from data_provider.kpl_fetcher import KplFetcher
+
+            if self._kpl_fetcher is None:
+                self._kpl_fetcher = KplFetcher()
+            return self._kpl_fetcher.get_fundamental_bundle(stock_code)
+        except Exception as exc:
+            logger.warning("kpl fundamental bundle failed for %s: %s", stock_code, exc)
+            return None
 
     def _get_capital_flow_kpl(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """Fetch individual stock capital flow from the KPL data source.

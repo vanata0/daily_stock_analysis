@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 基本面的成长/业绩/机构三块接入 KPL 作为优先源，AkShare 完整保留为兜底：原链路以「无参拉取全市场默认报告期 + 本地按代码捞行 + 关键词匹配列名」的方式取数，实测常常捞到了行却提取出全 None（`growth` 四字段、`institution.top10_holder_change` 均为空），KPL 则按股票代码直查、字段名固定。逐字段合并而非整块替换，KPL 未启用、服务不可达或某字段缺失时该字段仍由 AkShare 承担（如银行股没有销售毛利率，`gross_margin` 保持回落）。实测浪潮信息基本面整体由 `partial` 转为 `ok`。
+- [修复] KPL 十大流通股东的 `change_from_last` 是**较上期变化百分比**而非持股万股，按股数解读会得到完全错误的量级；已用相邻两期持股数交叉验算确认（香港中央结算 3526.77→3383.30 万股即 -143.47 万股，对应值 -4.07 正是 -4.07%）。`top10_holder_change` 采用十家合计口径：由各家本期持股与其变化率反推上期持股后汇总计算，可正确容纳「不变」与「新进」两种非数值取值。
+- [修复] KPL 业绩预告取自 `stock-big-reminder` 的 `type=5`，但该类型是**财报类公告混合流**而非业绩预告专属，实测 6 只标的中仅 2 只首条为业绩预告，其余为季报/年报/年报摘要/H股公告；伴生的 `tag` 字段只能区分「财报类/减持类」，无法区分预告与正式财报，因此叠加标题关键词过滤，避免把年报当作业绩预告。
+- [文档] 业绩快报（`earnings.quick_report_summary`）确认为结构性缺口，保留 AkShare `stock_yjkb_em`：KPL 的业绩披露走 Socket 长连接（命令码 2113，Protobuf over TCP），HTTP 侧无对应能力，已由 kpl-unified-client 以 DEX 反编译佐证（`PerformanceDisclosureModel` 的 `reportType` 三分法：1=业绩公告/2=业绩快报/其余=业绩预告）。
 - [修复] Web 服务端口探测未设置 `SO_REUSEADDR`，比 uvicorn 的实际绑定更严格（uvicorn 走 asyncio `create_server`，POSIX 上默认 `reuse_address=True`）：上一个进程退出时若仍有 keep-alive 连接残留，探测会误报「FastAPI port is not available」，systemd 因此反复重启空转（实测连续失败 12 次、约 110 秒才自愈）。改为与 uvicorn 行为一致；端口真被占用（已存在 LISTEN）时内核仍会拒绝，不影响冲突检测。
 - [改进] 个股资金流主源由迈瑞数据切换为 KPL，动机是可持续性而非口径优劣：Tushare 代理站下线后迈瑞是唯一的个股资金流来源，KPL 提供一条不依赖将失效凭证的通路。迈瑞保留为兜底，链路为 KPL → 迈瑞 → 东财。资金流字段契约不变（`main_net_inflow`/`inflow_5d`/`inflow_10d`），原迈瑞的四档明细字段无下游消费方。此前版本的变更说明曾以 Tushare `moneyflow`（特大单+大单）对拍得出「迈瑞接近随机、KPL 明显更准」的结论，该结论不成立：改用 Tushare 自身的 `net_mf_amount` 字段结果完全反转，同一基准给出两个相反答案，说明其主力口径未经校准，两组数字均不能作为准确性证据。
 - [修复] KPL 资金流把「无主力资金覆盖」误当成「净流入为零」：北交所等标的当日有真实成交（`turnover` 与日线成交额一致）但主力买卖字段均为 0，此前会作为真值 0 返回，使下游判为中性而非回落到其它数据源；现在识别该情形并跳过该交易日。同时将回溯余量由 8 个日历日提高到 20 个，避免 10 个交易日跨春节连休时凑不满样本导致 `inflow_10d` 静默为空。

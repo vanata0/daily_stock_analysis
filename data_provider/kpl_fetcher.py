@@ -600,6 +600,152 @@ class KplFetcher(BaseFetcher):
     # BaseFetcher 的默认 None 让管理器自动降级到其它数据源。
 
     # ------------------------------------------------------------------
+    # 基本面：成长 / 业绩 / 机构
+    # ------------------------------------------------------------------
+
+    def get_fundamental_bundle(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """获取成长、业绩、机构三块基本面字段。
+
+        字段语义与 AkshareFundamentalAdapter.get_fundamental_bundle 保持一致，
+        供其作为优先源合并；本方法只填能确证的字段，拿不到的留 None 由
+        AkShare 兜底，不做猜测性填充。
+
+        与 AkShare 路径的关键差异：AkShare 走「无参拉全市场默认报告期 + 本地
+        捞行 + 关键词猜列名」，命中率低；KPL 全部按股票代码直查、字段名固定。
+
+        Returns:
+            {"growth": {...}, "earnings": {...}, "institution": {...}}；
+            数据源不可用时返回 None
+        """
+        if not self.is_available():
+            return None
+        code = normalize_stock_code(stock_code)
+        if not code or not code.isdigit() or len(code) != 6:
+            return None
+
+        return {
+            "growth": self._kpl_growth(code),
+            "earnings": self._kpl_earnings(code),
+            "institution": self._kpl_institution(code),
+        }
+
+    def _kpl_growth(self, code: str) -> Dict[str, Any]:
+        """成长性四字段，取自 /finance/finance-info（105 期财报 + 同比）。
+
+        上游给的是带单位的字符串（"-19.59%" / "2.75%"），这里统一剥成数值。
+        """
+        try:
+            payload = self._client.get(f"/finance/finance-info/{code}")
+        except KplError as exc:
+            logger.debug("[KplFetcher] %s 财务摘要获取失败: %s", code, exc)
+            return {}
+
+        reports = payload.get("reports") or []
+        yoy = payload.get("yoy_reports") or []
+        if not reports:
+            return {}
+        latest = reports[0] if isinstance(reports[0], dict) else {}
+        latest_yoy = yoy[0] if yoy and isinstance(yoy[0], dict) else {}
+
+        return {
+            "revenue_yoy": _pct_to_float(latest_yoy.get("GJZB_YYSR")),
+            "net_profit_yoy": _pct_to_float(latest_yoy.get("GJZB_JLR")),
+            "roe": _pct_to_float(latest.get("YLNL_JZCSYL")),
+            "gross_margin": _pct_to_float(latest.get("YLNL_XSMLL")),
+        }
+
+    def _kpl_earnings(self, code: str) -> Dict[str, Any]:
+        """业绩预告摘要，取自 /company-info/stock-big-reminder。
+
+        ⚠️ 该接口的 ``type=5`` 是**财报类公告混合流**，不是业绩预告专属：实测
+        6 只标的里只有 2 只首条是业绩预告，其余是季报/年报/年报摘要/H股公告。
+        伴生的 ``tag`` 只能区分「财报类(1) / 减持类(2)」，区分不了预告与正式
+        财报，所以必须再按标题关键词筛，否则会把年报当成业绩预告。
+
+        业绩快报（quick_report_summary）不在这里填：KPL 的业绩披露走 Socket
+        长连接（命令码 2113，Protobuf），HTTP 侧没有对应能力，已确认为结构性
+        缺口，保留 AkShare stock_yjkb_em 兜底。
+        """
+        try:
+            payload = self._client.get(f"/company-info/stock-big-reminder/{code}")
+        except KplError as exc:
+            logger.debug("[KplFetcher] %s 重要事项提醒获取失败: %s", code, exc)
+            return {}
+
+        for item in payload.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            raw = item.get("raw") or {}
+            if raw.get("type") != 5 or raw.get("tag") != 1:
+                continue
+            title = str(item.get("title") or "").strip()
+            if "业绩预告" not in title:
+                continue
+            date = str(item.get("date") or "")[:10]
+            summary = f"{title}（{date}）" if date else title
+            return {"forecast_summary": summary[:200]}
+        return {}
+
+    def _kpl_institution(self, code: str) -> Dict[str, Any]:
+        """十大流通股东合计持股变动百分比。
+
+        ⚠️ 上游 ``change_from_last``（SJJZC）是**较上期变化百分比**，不是股数。
+        已用相邻两期持股数交叉验算确认：香港中央结算 3526.77→3383.30 万股
+        （-143.47 万股）对应 -4.07，正是 -4.07%；华泰柏瑞沪深300ETF
+        1694.43→826.90（-867.53 万股）对应 -51.20，正是 -51.20%。按万股解读
+        会得到完全错误的量级。
+
+        取值有三种形态：``"不变"`` / ``"新进"`` / 数值百分比。这里由各家本期
+        持股数与其变化率反推上期持股，再按十家合计口径算净变动百分比——比
+        取单一股东更能反映机构整体增减，且能正确容纳「新进」（上期为 0）。
+        """
+        for day, sq_day in _recent_quarter_pairs():
+            try:
+                payload = self._client.get(
+                    f"/institution/gudong-info-ten-by-date/{code}",
+                    params={"day": day, "sq_day": sq_day, "holder_type": 1},
+                )
+            except KplError as exc:
+                logger.debug("[KplFetcher] %s 十大股东 %s 获取失败: %s", code, day, exc)
+                continue
+
+            items = payload.get("items") or []
+            if not items:
+                continue  # 该报告期尚未披露，往前找
+
+            now_total = 0.0
+            old_total = 0.0
+            counted = 0
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                now = _to_float(item.get("holding_shares_wan"))
+                if now is None:
+                    continue
+                change = str(item.get("change_from_last") or "").strip()
+                if change == "不变":
+                    old = now
+                elif change == "新进":
+                    old = 0.0
+                else:
+                    pct = _to_float(change)
+                    if pct is None or pct <= -100:
+                        continue  # 无法反推上期持股，跳过该家而不是猜
+                    old = now / (1.0 + pct / 100.0)
+                now_total += now
+                old_total += old
+                counted += 1
+
+            if counted == 0 or old_total <= 0:
+                continue
+            change_pct = (now_total - old_total) / old_total * 100.0
+            return {
+                "top10_holder_change": round(change_pct, 4),
+                "top10_report_date": day,
+            }
+        return {}
+
+    # ------------------------------------------------------------------
     # 资源释放
     # ------------------------------------------------------------------
 
@@ -620,6 +766,48 @@ def _to_int(value: Any) -> Optional[int]:
     """把上游可能给出的 str/float/None 统一成 int，无法解析返回 None。"""
     f = _to_float(value)
     return int(f) if f is not None else None
+
+
+def _pct_to_float(value: Any) -> Optional[float]:
+    """剥掉上游财务字段的单位后缀，返回数值。
+
+    上游把数值和单位放在同一个字符串里（``"-19.59%"`` / ``"2.75%"``），
+    直接 float() 会失败。这里只处理百分号与空白，其它单位（如 "354.70亿"）
+    不在本函数职责内——那类字段量纲不同，需要各自换算，不能笼统剥离。
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    return _to_float(text)
+
+
+def _recent_quarter_pairs(today: Optional[date] = None, limit: int = 4):
+    """由近及远生成 (报告期, 上一报告期) 的日期串，用于回溯已披露的季报。
+
+    十大股东按报告期归档，最新一期常常尚未披露（实测 2026-06-30 返回空，
+    因为半年报要到 8 月底才出），需要依次往前找到第一个有数据的报告期。
+    """
+    today = today or date.today()
+    ends = [(3, 31), (6, 30), (9, 30), (12, 31)]
+    quarters = []
+    year = today.year
+    for y in (year, year - 1, year - 2):
+        for month, day_ in ends:
+            d = date(y, month, day_)
+            if d <= today:
+                quarters.append(d)
+    quarters.sort(reverse=True)
+
+    pairs = []
+    for i, d in enumerate(quarters[:limit]):
+        if i + 1 >= len(quarters):
+            break
+        pairs.append((d.isoformat(), quarters[i + 1].isoformat()))
+    return pairs
 
 def _epoch_to_date(value: Any) -> Optional[str]:
     """秒级 epoch 转 ``YYYY-MM-DD``；无法解析返回 None。"""

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -238,6 +240,39 @@ def _build_dividend_payload(
     }
 
 
+def _prefixed_symbol(stock_code: str) -> str:
+    """把 6 位 A 股代码转成带交易所前缀的 symbol（sh600519 / sz000001 / bj830799）。
+
+    复用 akshare_fetcher 里已有的转换规则，避免两处各写一份前缀判定。延迟导入是
+    因为 akshare_fetcher 在模块级就拉起了 akshare 及其依赖链。
+    """
+    from data_provider.akshare_fetcher import _to_sina_tx_symbol
+
+    return _to_sina_tx_symbol(_normalize_code(stock_code))
+
+
+def _recent_report_periods(count: int = 2, now: Optional[datetime] = None) -> List[str]:
+    """返回最近若干个报告期（YYYYMMDD，由新到旧）。
+
+    AkShare 的 stock_yjyg_em / stock_yjbb_em / stock_yjkb_em / stock_gdfx_top_10_em
+    都按报告期拉全市场表，签名里只有 ``date``，不接受个股代码。不显式传 ``date``
+    就会退化成接口自带的默认值（2020Q1 / 2021Q4），永远取不到当期数据。
+
+    逐个回退而不是只取最近一期：季报披露有滞后，报告期末刚过时当期表可能还是空的。
+    回退深度保持在 2 期——每次回退都是一次全市场表拉取（秒级），而更早的报告期对
+    当期结论已无参考价值，继续往前翻只会吃满 fundamental 的抓取预算。
+    """
+    ref = now or datetime.now()
+    quarter_ends = ((3, 31), (6, 30), (9, 30), (12, 31))
+    candidates = [
+        datetime(year, month, day)
+        for year in (ref.year, ref.year - 1, ref.year - 2)
+        for month, day in quarter_ends
+    ]
+    reached = sorted((c for c in candidates if c <= ref), reverse=True)
+    return [c.strftime("%Y%m%d") for c in reached[:count]]
+
+
 def _extract_latest_row(df: pd.DataFrame, stock_code: str) -> Optional[pd.Series]:
     """
     Select the most relevant row for the given stock.
@@ -269,6 +304,50 @@ class AkshareFundamentalAdapter:
     # so this class-level default is what instances start from.
     _kpl_fetcher: Optional[Any] = None
 
+    # 按报告期取的接口返回的是全市场表（业绩报表单期近 6000 行，秒级），和个股无关。
+    # 批量分析时每只股票都重拉一遍会直接吃满 fundamental 抓取预算，故按 (接口, 参数)
+    # 做进程内 TTL 缓存，跨 adapter 实例共享。
+    _df_cache: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], Tuple[float, pd.DataFrame]] = {}
+    _df_cache_lock = threading.Lock()
+    _DF_CACHE_TTL_SECONDS = 300.0
+    _DF_CACHE_MAX_ENTRIES = 32
+
+    @classmethod
+    def _df_cache_key(
+        cls,
+        func_name: str,
+        kwargs: Dict[str, Any],
+    ) -> Tuple[str, Tuple[Tuple[str, str], ...]]:
+        return func_name, tuple(sorted((str(k), str(v)) for k, v in kwargs.items()))
+
+    @classmethod
+    def _df_cache_get(cls, key: Tuple[str, Tuple[Tuple[str, str], ...]]) -> Optional[pd.DataFrame]:
+        with cls._df_cache_lock:
+            item = cls._df_cache.get(key)
+            if item is None:
+                return None
+            cached_at, df = item
+            if time.time() - cached_at > cls._DF_CACHE_TTL_SECONDS:
+                cls._df_cache.pop(key, None)
+                return None
+            return df
+
+    @classmethod
+    def _df_cache_put(cls, key: Tuple[str, Tuple[Tuple[str, str], ...]], df: pd.DataFrame) -> None:
+        with cls._df_cache_lock:
+            now = time.time()
+            expired = [
+                cached_key
+                for cached_key, (cached_at, _) in cls._df_cache.items()
+                if now - cached_at > cls._DF_CACHE_TTL_SECONDS
+            ]
+            for cached_key in expired:
+                cls._df_cache.pop(cached_key, None)
+            while len(cls._df_cache) >= cls._DF_CACHE_MAX_ENTRIES:
+                oldest = min(cls._df_cache.items(), key=lambda item: item[1][0])[0]
+                cls._df_cache.pop(oldest, None)
+            cls._df_cache[key] = (now, df)
+
     def _call_df_candidates(
         self,
         candidates: List[Tuple[str, Dict[str, Any]]],
@@ -283,15 +362,42 @@ class AkshareFundamentalAdapter:
             fn = getattr(ak, func_name, None)
             if fn is None:
                 continue
+            cache_key = self._df_cache_key(func_name, kwargs)
+            cached = self._df_cache_get(cache_key)
+            if cached is not None:
+                return cached, func_name, errors
             try:
                 df = fn(**kwargs)
                 if isinstance(df, pd.Series):
                     df = df.to_frame().T
                 if isinstance(df, pd.DataFrame) and not df.empty:
+                    self._df_cache_put(cache_key, df)
                     return df, func_name, errors
             except Exception as exc:
                 errors.append(f"{func_name}:{type(exc).__name__}")
                 continue
+        return None, None, errors
+
+    def _call_df_candidates_for_stock(
+        self,
+        candidates: List[Tuple[str, Dict[str, Any]]],
+        stock_code: str,
+    ) -> Tuple[Optional[pd.Series], Optional[str], List[str]]:
+        """逐个尝试候选，直到某个候选的结果里真的能提取出这只票。
+
+        与 :meth:`_call_df_candidates` 的区别：后者在第一个非空 DataFrame 处就停下。
+        对「按报告期拉全市场表」的接口来说，拿到表不等于表里有这只票——报告期不对
+        或该公司当期没披露时，后面本可命中的候选就永远跑不到了。
+        """
+        errors: List[str] = []
+        for candidate in candidates:
+            df, source, candidate_errors = self._call_df_candidates([candidate])
+            errors.extend(candidate_errors)
+            if df is None:
+                continue
+            row = _extract_latest_row(df, stock_code)
+            if row is not None:
+                return row, source, errors
         return None, None, errors
 
     def get_fundamental_bundle(self, stock_code: str) -> Dict[str, Any]:
@@ -344,33 +450,67 @@ class AkshareFundamentalAdapter:
                     result["earnings"]["financial_report"] = financial_report_payload
                 result["source_chain"].append(f"growth:{fin_source}")
 
-        # Earnings forecast
-        forecast_df, forecast_source, forecast_errors = self._call_df_candidates([
-            ("stock_yjyg_em", {"symbol": stock_code}),
-            ("stock_yjyg_em", {}),
-            ("stock_yjbb_em", {"symbol": stock_code}),
-            ("stock_yjbb_em", {}),
-        ])
-        result["errors"].extend(forecast_errors)
-        if forecast_df is not None:
-            row = _extract_latest_row(forecast_df, stock_code)
-            if row is not None:
+        report_periods = _recent_report_periods()
+
+        # Earnings report (业绩报表) —— earnings 的主源。
+        #
+        # 业绩预告 / 快报是自愿披露，很多公司本来就没有（茅台即是），把它们放在前面
+        # 会让 earnings 对这类公司长期为空，进而把整个基本面判成 partial。业绩报表是
+        # 强制披露且字段结构化，命中率和信息量都更高，因此先取它；只有它没命中时才
+        # 回退到预告 / 快报——这三路每路都是一次全市场表拉取，全跑一遍会吃满预算。
+        report_row, report_source, report_errors = self._call_df_candidates_for_stock(
+            [("stock_yjbb_em", {"date": period}) for period in report_periods],
+            stock_code,
+        )
+        result["errors"].extend(report_errors)
+        if report_row is not None:
+            report_payload = {
+                "eps": _safe_float(_pick_by_keywords(report_row, ["每股收益"])),
+                "revenue": _safe_float(_pick_by_keywords(report_row, ["营业总收入", "营业收入"])),
+                "revenue_yoy": _safe_float(_pick_by_keywords(report_row, ["营业总收入-同比增长"])),
+                "net_profit_parent": _safe_float(_pick_by_keywords(report_row, ["净利润"])),
+                "net_profit_yoy": _safe_float(_pick_by_keywords(report_row, ["净利润-同比增长"])),
+                "roe": _safe_float(_pick_by_keywords(report_row, ["净资产收益率"])),
+                "gross_margin": _safe_float(_pick_by_keywords(report_row, ["销售毛利率"])),
+                "announce_date": _safe_str(_pick_by_keywords(report_row, ["最新公告日期", "公告日期"])) or None,
+            }
+            report_payload = {k: v for k, v in report_payload.items() if v is not None}
+            if report_payload:
+                # 逐字段补全而非整块替换：财务指标那一路（stock_financial_abstract）可能
+                # 已经写入 report_date / operating_cash_flow，业绩报表补的是 eps /
+                # gross_margin 一类，直接赋值会把前者的字段抹掉。
+                financial_report = result["earnings"].setdefault("financial_report", {})
+                filled = False
+                for key, value in report_payload.items():
+                    if financial_report.get(key) is None:
+                        financial_report[key] = value
+                        filled = True
+                if filled:
+                    result["source_chain"].append(f"earnings_report:{report_source}")
+
+        if not result["earnings"]:
+            # Earnings forecast
+            forecast_row, forecast_source, forecast_errors = self._call_df_candidates_for_stock(
+                [("stock_yjyg_em", {"date": period}) for period in report_periods],
+                stock_code,
+            )
+            result["errors"].extend(forecast_errors)
+            if forecast_row is not None:
                 result["earnings"]["forecast_summary"] = _safe_str(
-                    _pick_by_keywords(row, ["预告", "业绩变动", "内容", "摘要", "公告"])
+                    _pick_by_keywords(forecast_row, ["预告", "业绩变动", "内容", "摘要", "公告"])
                 )[:200]
                 result["source_chain"].append(f"earnings_forecast:{forecast_source}")
 
-        # Earnings quick report
-        quick_df, quick_source, quick_errors = self._call_df_candidates([
-            ("stock_yjkb_em", {"symbol": stock_code}),
-            ("stock_yjkb_em", {}),
-        ])
-        result["errors"].extend(quick_errors)
-        if quick_df is not None:
-            row = _extract_latest_row(quick_df, stock_code)
-            if row is not None:
+        if not result["earnings"]:
+            # Earnings quick report
+            quick_row, quick_source, quick_errors = self._call_df_candidates_for_stock(
+                [("stock_yjkb_em", {"date": period}) for period in report_periods],
+                stock_code,
+            )
+            result["errors"].extend(quick_errors)
+            if quick_row is not None:
                 result["earnings"]["quick_report_summary"] = _safe_str(
-                    _pick_by_keywords(row, ["快报", "摘要", "公告", "说明"])
+                    _pick_by_keywords(quick_row, ["快报", "摘要", "公告", "说明"])
                 )[:200]
                 result["source_chain"].append(f"earnings_quick:{quick_source}")
 
@@ -400,19 +540,22 @@ class AkshareFundamentalAdapter:
                 result["institution"]["institution_holding_change"] = inst_change
                 result["source_chain"].append(f"institution:{inst_source}")
 
-        top10_df, top10_source, top10_errors = self._call_df_candidates([
-            ("stock_gdfx_top_10_em", {"symbol": stock_code}),
-            ("stock_gdfx_top_10_em", {}),
-            ("stock_zh_a_gdhs_detail_em", {"symbol": stock_code}),
-            ("stock_zh_a_gdhs_detail_em", {}),
-        ])
+        # stock_gdfx_top_10_em 要的是带交易所前缀的 symbol（sh600519），传裸 6 位码会
+        # KeyError('sdgd')；它同样按报告期取数，date 缺省会停在 2021H1。
+        top10_candidates: List[Tuple[str, Dict[str, Any]]] = [
+            ("stock_gdfx_top_10_em", {"symbol": _prefixed_symbol(stock_code), "date": period})
+            for period in report_periods
+        ]
+        top10_candidates.append(("stock_zh_a_gdhs_detail_em", {"symbol": _normalize_code(stock_code)}))
+        top10_row, top10_source, top10_errors = self._call_df_candidates_for_stock(
+            top10_candidates,
+            stock_code,
+        )
         result["errors"].extend(top10_errors)
-        if top10_df is not None:
-            row = _extract_latest_row(top10_df, stock_code)
-            if row is not None:
-                holder_change = _safe_float(_pick_by_keywords(row, ["增减", "变化", "持股变化", "变动"]))
-                result["institution"]["top10_holder_change"] = holder_change
-                result["source_chain"].append(f"top10:{top10_source}")
+        if top10_row is not None:
+            holder_change = _safe_float(_pick_by_keywords(top10_row, ["增减", "变化", "持股变化", "变动"]))
+            result["institution"]["top10_holder_change"] = holder_change
+            result["source_chain"].append(f"top10:{top10_source}")
 
         self._merge_bundle_kpl(stock_code, result)
 

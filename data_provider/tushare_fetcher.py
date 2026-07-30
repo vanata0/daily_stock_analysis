@@ -48,6 +48,30 @@ _ETF_SZ_PREFIXES = ('15', '16', '18')
 _ETF_ALL_PREFIXES = _ETF_SH_PREFIXES + _ETF_SZ_PREFIXES
 
 
+# A 股按「手」报量，1 手 = 100 股；DSA 的 UnifiedRealtimeQuote.volume 统一用「股」。
+_HAND_TO_SHARE = 100
+
+
+def _realtime_volume_to_shares(value: Any, stock_code: str) -> Optional[int]:
+    """把实时行情的成交量统一换算成「股」。
+
+    上游按 A 股惯例以「手」返回，此前直接透传，导致 volume 比实际小 100 倍
+    ——实测中恒电气同一时刻 amount 与其它源一致（987,887,105）而 volume 只有
+    257,927，用 amount/volume 反推均价得 3830，是现价 38.33 的 100 倍。
+
+    港股与美股本就按「股」报量，不做换算。
+    """
+    # safe_int 在调用点的方法内部才导入，这里独立取一次，避免依赖调用顺序
+    from .realtime_types import safe_int
+
+    volume = safe_int(value)
+    if volume is None:
+        return None
+    if _is_us_code(stock_code) or _is_hk_market(stock_code):
+        return volume
+    return volume * _HAND_TO_SHARE
+
+
 def _is_etf_code(stock_code: str) -> bool:
     """
     Check if the code is an ETF fund code.
@@ -778,7 +802,7 @@ class TushareFetcher(BaseFetcher):
                     price=safe_float(row.get('price')),
                     change_pct=safe_float(row.get('pct_chg')),  # Pro 接口通常直接返回涨跌幅
                     change_amount=safe_float(row.get('change')),
-                    volume=safe_int(row.get('vol')),
+                    volume=_realtime_volume_to_shares(row.get('vol'), stock_code),
                     amount=safe_float(row.get('amount')),
                     high=safe_float(row.get('high')),
                     low=safe_float(row.get('low')),
@@ -825,7 +849,11 @@ class TushareFetcher(BaseFetcher):
                 price=price,
                 change_pct=round(change_pct, 2),
                 change_amount=round(change_amount, 2),
-                volume=safe_int(row['volume']) // 100,  # 转换为手
+                # 上游本就按「股」返回，此前 //100 转成了「手」，与
+                # UnifiedRealtimeQuote.volume 的「股」口径相反，导致成交量小 100 倍：
+                # 实测中恒电气 amount 与其它源一致（996,306,389）而 volume 只有
+                # 260,124，amount/volume 反推均价 3830，是现价 38.28 的 100 倍。
+                volume=safe_int(row['volume']),
                 amount=safe_float(row['amount']),
                 high=safe_float(row['high']),
                 low=safe_float(row['low']),
@@ -1237,6 +1265,10 @@ class TushareFetcher(BaseFetcher):
                 chip = ChipDistribution(
                     code=stock_code,
                     date=datetime.strptime(start_date, '%Y%m%d').strftime('%Y-%m-%d'),
+                    # ChipDistribution.source 的 dataclass 默认值是 "akshare"，
+                    # 不显式赋值会把 Tushare 的筹码数据标成 AkShare 来源，
+                    # 让运行流与报告里的来源追溯失真。
+                    source="tushare",
                     profit_ratio=metrics['获利比例'],
                     avg_cost=metrics['平均成本'],
                     cost_90_low=metrics['90成本-低'],

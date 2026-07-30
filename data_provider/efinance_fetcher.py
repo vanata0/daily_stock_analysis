@@ -178,6 +178,28 @@ def _build_eastmoney_etf_secid(stock_code: str) -> str:
     raise DataFetchError(f"无法确定 ETF {stock_code} 的 Eastmoney 市场前缀")
 
 
+# A 股按「手」报量，1 手 = 100 股；DSA 的 UnifiedRealtimeQuote.volume 统一用「股」。
+# ETF 同样按份额整百申报，走同一换算。
+_HAND_TO_SHARE = 100
+
+
+def _realtime_volume_to_shares(value, stock_code: str):
+    """把实时行情的成交量统一换算成「股」。
+
+    上游按 A 股惯例以「手」返回，此前直接透传，导致 volume 比实际小 100 倍
+    ——实测中恒电气用 amount/volume 反推均价得 3794，是现价 39.11 的 100 倍，
+    而同一时刻 KPL 与 TickFlow 反推均价都落在现价附近。
+
+    港股与美股本就按「股」报量，不做换算。
+    """
+    volume = safe_int(value)
+    if volume is None:
+        return None
+    if _is_us_code(stock_code) or _is_hk_market(stock_code):
+        return volume
+    return volume * _HAND_TO_SHARE
+
+
 def _is_us_code(stock_code: str) -> bool:
     """
     判断代码是否为美股
@@ -713,7 +735,7 @@ class EfinanceFetcher(BaseFetcher):
                 price=safe_float(row.get(price_col)),
                 change_pct=safe_float(row.get(pct_col)),
                 change_amount=safe_float(row.get(chg_col)),
-                volume=safe_int(row.get(vol_col)),
+                volume=_realtime_volume_to_shares(row.get(vol_col), stock_code),
                 amount=safe_float(row.get(amt_col)),
                 turnover_rate=safe_float(row.get(turn_col)),
                 amplitude=safe_float(row.get(amp_col)),
@@ -814,7 +836,7 @@ class EfinanceFetcher(BaseFetcher):
                 price=safe_float(row.get(price_col)),
                 change_pct=safe_float(row.get(pct_col)),
                 change_amount=safe_float(row.get(chg_col)),
-                volume=safe_int(row.get(vol_col)),
+                volume=_realtime_volume_to_shares(row.get(vol_col), stock_code),
                 amount=safe_float(row.get(amt_col)),
                 turnover_rate=safe_float(row.get(turn_col)),
                 amplitude=safe_float(row.get(amp_col)),

@@ -277,10 +277,13 @@ function deferredPromise<T>() {
   return { promise, resolve, reject };
 }
 
+// Each load fetches a fast history_close snapshot first, then quietly
+// re-fetches with includeRealtime=true to upgrade to live prices — so every
+// logical "load" produces 2 getSnapshot/getRisk calls, not 1.
 async function waitForInitialLoad() {
   await waitFor(() => expect(getAccounts).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(getSnapshot).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(getRisk).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(getSnapshot).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(getRisk).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(listTrades).toHaveBeenCalledTimes(1));
 }
 
@@ -345,13 +348,15 @@ describe('PortfolioPage FX refresh', () => {
     );
   }
 
-  it('uses fast portfolio valuation for page snapshot and risk loads', async () => {
+  it('uses fast portfolio valuation for the first paint, then upgrades to realtime prices', async () => {
     render(<PortfolioPage />);
 
     await waitForInitialLoad();
 
     expect(getSnapshot).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: false });
     expect(getRisk).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: false });
+    expect(getSnapshot).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: true });
+    expect(getRisk).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: true });
   });
 
   it('renders stale FX status with a manual refresh button', async () => {
@@ -364,10 +369,13 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('shows aggregate partial valuation limitations near summary totals', async () => {
-    getSnapshot.mockResolvedValueOnce(makeSnapshot({
+    const partialSnapshot = makeSnapshot({
       dataQuality: 'partial',
       limitations: ['realtime_quote_best_effort', 'fx_and_cost_basis_partial'],
-    }));
+    });
+    // Queued twice: the fast history_close paint and the background
+    // realtime-price upgrade both need to resolve to the same data here.
+    getSnapshot.mockResolvedValueOnce(partialSnapshot).mockResolvedValueOnce(partialSnapshot);
 
     render(<PortfolioPage />);
 
@@ -395,7 +403,7 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('renders portfolio decision signal risk summary', async () => {
-    getRisk.mockResolvedValueOnce(makeRisk({
+    const riskWithSignals = makeRisk({
       decisionSignalRisk: {
         available: true,
         total: 2,
@@ -415,7 +423,8 @@ describe('PortfolioPage FX refresh', () => {
           },
         ],
       },
-    }));
+    });
+    getRisk.mockResolvedValueOnce(riskWithSignals).mockResolvedValueOnce(riskWithSignals);
 
     render(<PortfolioPage />);
 
@@ -431,7 +440,7 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('uses the current UI language for portfolio decision signal risk action labels', async () => {
-    getRisk.mockResolvedValueOnce(makeRisk({
+    const riskWithSignal = makeRisk({
       decisionSignalRisk: {
         available: true,
         total: 1,
@@ -445,7 +454,8 @@ describe('PortfolioPage FX refresh', () => {
           },
         ],
       },
-    }));
+    });
+    getRisk.mockResolvedValueOnce(riskWithSignal).mockResolvedValueOnce(riskWithSignal);
 
     renderEnglishPage();
 
@@ -458,14 +468,15 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('renders portfolio decision signal risk fail-open state', async () => {
-    getRisk.mockResolvedValueOnce(makeRisk({
+    const failOpenRisk = makeRisk({
       decisionSignalRisk: {
         available: false,
         total: 0,
         actions: { sell: 0, reduce: 0, alert: 0 },
         items: [],
       },
-    }));
+    });
+    getRisk.mockResolvedValueOnce(failOpenRisk).mockResolvedValueOnce(failOpenRisk);
 
     render(<PortfolioPage />);
 
@@ -475,10 +486,18 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('refreshes FX for a single selected account and only reloads snapshot/risk', async () => {
+    const initialSnapshot = makeSnapshot({ fxStale: true });
+    const switchedSnapshot = makeSnapshot({ accountId: 1, fxStale: true });
+    const refreshedSnapshot = makeSnapshot({ accountId: 1, fxStale: false });
+    // Each logical load resolves the fast history_close call and the
+    // background realtime-upgrade call with the same snapshot.
     getSnapshot
-      .mockResolvedValueOnce(makeSnapshot({ fxStale: true }))
-      .mockResolvedValueOnce(makeSnapshot({ accountId: 1, fxStale: true }))
-      .mockResolvedValueOnce(makeSnapshot({ accountId: 1, fxStale: false }));
+      .mockResolvedValueOnce(initialSnapshot)
+      .mockResolvedValueOnce(initialSnapshot)
+      .mockResolvedValueOnce(switchedSnapshot)
+      .mockResolvedValueOnce(switchedSnapshot)
+      .mockResolvedValueOnce(refreshedSnapshot)
+      .mockResolvedValueOnce(refreshedSnapshot);
 
     render(<PortfolioPage />);
 
@@ -488,7 +507,7 @@ describe('PortfolioPage FX refresh', () => {
     fireEvent.change(accountSelect, { target: { value: '1' } });
 
     await waitFor(() => {
-      expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false });
+      expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: true });
     });
 
     const snapshotCallsBeforeRefresh = getSnapshot.mock.calls.length;
@@ -499,8 +518,8 @@ describe('PortfolioPage FX refresh', () => {
 
     await waitFor(() => expect(refreshFx).toHaveBeenCalledWith({ accountId: 1 }));
     expect(await screen.findByText('汇率已刷新，共更新 1 对。')).toBeInTheDocument();
-    await waitFor(() => expect(getSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeRefresh + 1));
-    await waitFor(() => expect(getRisk).toHaveBeenCalledTimes(riskCallsBeforeRefresh + 1));
+    await waitFor(() => expect(getSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeRefresh + 2));
+    await waitFor(() => expect(getRisk).toHaveBeenCalledTimes(riskCallsBeforeRefresh + 2));
     expect(listTrades).toHaveBeenCalledTimes(tradeCallsBeforeRefresh);
     expect(listCashLedger).not.toHaveBeenCalled();
     expect(listCorporateActions).not.toHaveBeenCalled();
@@ -550,10 +569,11 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('renders backend-provided position valuation fields and stale missing-price hint', async () => {
-    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: true, positions: [
+    const valuationSnapshot = makeSnapshot({ fxStale: true, positions: [
       { symbol: 'HK00700', market: 'hk', currency: 'HKD', quantity: 10, avgCost: 400, totalCost: 4000, lastPrice: 420, marketValueBase: 4200, unrealizedPnlBase: 200, unrealizedPnlPct: 5, valuationCurrency: 'HKD', priceSource: 'history_close', priceDate: '2026-03-18', priceStale: true, priceAvailable: true },
       { symbol: 'AAPL', market: 'us', currency: 'USD', quantity: 5, avgCost: 100, totalCost: 500, lastPrice: 0, marketValueBase: 0, unrealizedPnlBase: 0, unrealizedPnlPct: null, valuationCurrency: 'USD', priceSource: 'missing', priceDate: null, priceStale: true, priceAvailable: false },
-    ] }));
+    ] });
+    getSnapshot.mockResolvedValueOnce(valuationSnapshot).mockResolvedValueOnce(valuationSnapshot);
 
     render(<PortfolioPage />);
 
@@ -579,9 +599,10 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('loads latest active signals for holdings without scanning paginated signal lists', async () => {
-    getSnapshot.mockResolvedValueOnce(makeSnapshot({ positions: [
+    const signalSnapshot = makeSnapshot({ positions: [
       { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
-    ] }));
+    ] });
+    getSnapshot.mockResolvedValueOnce(signalSnapshot).mockResolvedValueOnce(signalSnapshot);
     const latestSignal = makeDecisionSignal({
       id: 101,
       stockCode: '600519',
@@ -633,15 +654,27 @@ describe('PortfolioPage FX refresh', () => {
       { id: 1, name: 'Main' },
       { id: 2, name: 'Alt' },
     ]));
+    const accountOneSnapshot = makeSnapshot({
+      accountCount: 2,
+      positions: [
+        { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
+      ],
+    });
+    const accountTwoSnapshotData = makeSnapshot({
+      accountId: 2,
+      positions: [
+        { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
+      ],
+    });
     const accountTwoSnapshot = deferredPromise<ReturnType<typeof makeSnapshot>>();
     getSnapshot
-      .mockResolvedValueOnce(makeSnapshot({
-        accountCount: 2,
-        positions: [
-          { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
-        ],
-      }))
-      .mockReturnValueOnce(accountTwoSnapshot.promise);
+      // Initial load: fast history_close paint + realtime upgrade, both account 1.
+      .mockResolvedValueOnce(accountOneSnapshot)
+      .mockResolvedValueOnce(accountOneSnapshot)
+      // Account switch: fast fetch is deferred to control timing below.
+      .mockReturnValueOnce(accountTwoSnapshot.promise)
+      // Account switch's own realtime upgrade, fired once the fast fetch above resolves.
+      .mockResolvedValueOnce(accountTwoSnapshotData);
     getLatestDecisionSignals.mockResolvedValue({
       items: [makeDecisionSignal({ stockCode: '600519', riskSummary: '账号信号' })],
       total: 1,
@@ -664,12 +697,7 @@ describe('PortfolioPage FX refresh', () => {
     expect(getLatestDecisionSignals).toHaveBeenCalledTimes(signalCallsBeforeSwitch);
 
     await act(async () => {
-      accountTwoSnapshot.resolve(makeSnapshot({
-        accountId: 2,
-        positions: [
-          { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
-        ],
-      }));
+      accountTwoSnapshot.resolve(accountTwoSnapshotData);
       await accountTwoSnapshot.promise;
     });
 
@@ -686,19 +714,23 @@ describe('PortfolioPage FX refresh', () => {
       { id: 1, name: 'Main' },
       { id: 2, name: 'Alt' },
     ]));
+    const accountOneSnapshot = makeSnapshot({
+      accountCount: 2,
+      positions: [
+        { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
+      ],
+    });
+    const accountTwoSnapshot = makeSnapshot({
+      accountId: 2,
+      positions: [
+        { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
+      ],
+    });
     getSnapshot
-      .mockResolvedValueOnce(makeSnapshot({
-        accountCount: 2,
-        positions: [
-          { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
-        ],
-      }))
-      .mockResolvedValueOnce(makeSnapshot({
-        accountId: 2,
-        positions: [
-          { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
-        ],
-      }));
+      .mockResolvedValueOnce(accountOneSnapshot)
+      .mockResolvedValueOnce(accountOneSnapshot)
+      .mockResolvedValueOnce(accountTwoSnapshot)
+      .mockResolvedValueOnce(accountTwoSnapshot);
     const oldSignals = deferredPromise<{
       items: DecisionSignalItem[];
       total: number;
@@ -738,12 +770,13 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('matches holding signals by stock-code equivalence and leaves unmatched rows empty', async () => {
-    getSnapshot.mockResolvedValueOnce(makeSnapshot({ positions: [
+    const equivalenceSnapshot = makeSnapshot({ positions: [
       { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
       { symbol: 'SH600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
       { symbol: '00700.HK', market: 'hk', currency: 'HKD', quantity: 10, avgCost: 400, totalCost: 4000, lastPrice: 420, marketValueBase: 4200, unrealizedPnlBase: 200, unrealizedPnlPct: 5, valuationCurrency: 'HKD', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
       { symbol: 'AAPL', market: 'us', currency: 'USD', quantity: 2, avgCost: 180, totalCost: 360, lastPrice: 190, marketValueBase: 380, unrealizedPnlBase: 20, unrealizedPnlPct: 5.56, valuationCurrency: 'USD', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
-    ] }));
+    ] });
+    getSnapshot.mockResolvedValueOnce(equivalenceSnapshot).mockResolvedValueOnce(equivalenceSnapshot);
     getLatestDecisionSignals.mockImplementation(async (stockCode: string) => {
       if (stockCode.includes('600519')) {
         return {
@@ -781,10 +814,11 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('shows a visible partial warning when one latest holding signal lookup fails', async () => {
-    getSnapshot.mockResolvedValueOnce(makeSnapshot({ positions: [
+    const partialFailureSnapshot = makeSnapshot({ positions: [
       { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
       { symbol: 'AAPL', market: 'us', currency: 'USD', quantity: 2, avgCost: 180, totalCost: 360, lastPrice: 190, marketValueBase: 380, unrealizedPnlBase: 20, unrealizedPnlPct: 5.56, valuationCurrency: 'USD', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
-    ] }));
+    ] });
+    getSnapshot.mockResolvedValueOnce(partialFailureSnapshot).mockResolvedValueOnce(partialFailureSnapshot);
     getLatestDecisionSignals
       .mockResolvedValueOnce({
         items: [makeDecisionSignal({ stockCode: '600519', riskSummary: '已加载风险' })],
@@ -802,10 +836,11 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('loads each unique holding through the latest endpoint once', async () => {
-    getSnapshot.mockResolvedValueOnce(makeSnapshot({ positions: [
+    const dedupSnapshot = makeSnapshot({ positions: [
       { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
       { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 2, avgCost: 1500, totalCost: 3000, lastPrice: 1600, marketValueBase: 3200, unrealizedPnlBase: 200, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true },
-    ] }));
+    ] });
+    getSnapshot.mockResolvedValueOnce(dedupSnapshot).mockResolvedValueOnce(dedupSnapshot);
     getLatestDecisionSignals.mockResolvedValueOnce({
       items: [makeDecisionSignal({ stockCode: '600519', riskSummary: '唯一 latest 风险' })],
       total: 1,
@@ -828,7 +863,8 @@ describe('PortfolioPage FX refresh', () => {
       totalCost: 100 + index,
       marketValueBase: 120 + index,
     }));
-    getSnapshot.mockResolvedValueOnce(makeSnapshot({ positions }));
+    const concurrentSnapshot = makeSnapshot({ positions });
+    getSnapshot.mockResolvedValueOnce(concurrentSnapshot).mockResolvedValueOnce(concurrentSnapshot);
     let inFlight = 0;
     let maxInFlight = 0;
     getLatestDecisionSignals.mockImplementation(async () => {
@@ -848,9 +884,10 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('submits manual analysis for a held position without exposing portfolio details in the UI call', async () => {
-    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: true, positions: [
+    const analysisSnapshot = makeSnapshot({ fxStale: true, positions: [
       { symbol: 'HK00700', market: 'hk', currency: 'HKD', quantity: 10, avgCost: 400, totalCost: 4000, lastPrice: 420, marketValueBase: 4200, unrealizedPnlBase: 200, unrealizedPnlPct: 5, valuationCurrency: 'HKD', priceSource: 'history_close', priceDate: '2026-03-18', priceStale: true, priceAvailable: true },
-    ] }));
+    ] });
+    getSnapshot.mockResolvedValueOnce(analysisSnapshot).mockResolvedValueOnce(analysisSnapshot);
 
     render(<PortfolioPage />);
 
@@ -932,8 +969,8 @@ describe('PortfolioPage FX refresh', () => {
     fireEvent.click(screen.getByRole('button', { name: '刷新汇率' }));
 
     expect(await screen.findByText(/在线刷新未完全成功/)).toBeInTheDocument();
-    await waitFor(() => expect(getSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeRefresh + 1));
-    await waitFor(() => expect(getRisk).toHaveBeenCalledTimes(riskCallsBeforeRefresh + 1));
+    await waitFor(() => expect(getSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeRefresh + 2));
+    await waitFor(() => expect(getRisk).toHaveBeenCalledTimes(riskCallsBeforeRefresh + 2));
     expect(listTrades).toHaveBeenCalledTimes(tradeCallsBeforeRefresh);
     expect(listCashLedger).not.toHaveBeenCalled();
     expect(listCorporateActions).not.toHaveBeenCalled();
@@ -962,8 +999,13 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('does not keep success feedback when snapshot reload fails after FX refresh succeeds', async () => {
+    const initialSnapshot = makeSnapshot({ fxStale: true });
     getSnapshot
-      .mockResolvedValueOnce(makeSnapshot({ fxStale: true }))
+      // Initial load: fast history_close paint + realtime upgrade, both succeed.
+      .mockResolvedValueOnce(initialSnapshot)
+      .mockResolvedValueOnce(initialSnapshot)
+      // FX-refresh-triggered reload's fast fetch fails, aborting before it
+      // ever reaches its own realtime-upgrade step.
       .mockRejectedValueOnce(
         createApiError(
           createParsedApiError({

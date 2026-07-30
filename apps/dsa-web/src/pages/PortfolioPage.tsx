@@ -337,7 +337,48 @@ const PortfolioPage: React.FC = () => {
     }
   }, [selectedBroker]);
 
+  const latestSnapshotRequestRef = useRef<string>('');
+
+  // Fast paint shows history_close (no realtime prefetch, avoids blocking on
+  // slow external quote sources); this quietly re-fetches with realtime
+  // prices once the page has something to show and swaps it in if the
+  // account/cost-method scope hasn't changed in the meantime.
+  const upgradeSnapshotToRealtime = useCallback(async (
+    requestKey: string,
+    requestedAccountId: number | undefined,
+    requestedCostMethod: PortfolioCostMethod,
+  ) => {
+    try {
+      const snapshotData = await portfolioApi.getSnapshot({
+        accountId: requestedAccountId,
+        costMethod: requestedCostMethod,
+        includeRealtime: true,
+      });
+      if (latestSnapshotRequestRef.current === requestKey) {
+        setSnapshot(snapshotData);
+      }
+    } catch {
+      // Best-effort upgrade; keep whatever the fast fetch already displayed.
+    }
+
+    try {
+      const riskData = await portfolioApi.getRisk({
+        accountId: requestedAccountId,
+        costMethod: requestedCostMethod,
+        includeRealtime: true,
+      });
+      if (latestSnapshotRequestRef.current === requestKey) {
+        setRisk(riskData);
+        setRiskWarning(null);
+      }
+    } catch {
+      // Keep whatever risk data (or warning) the fast fetch already produced.
+    }
+  }, []);
+
   const loadSnapshotAndRisk = useCallback(async () => {
+    const requestKey = `${queryAccountId ?? 'all'}:${costMethod}:${Date.now()}`;
+    latestSnapshotRequestRef.current = requestKey;
     setIsLoading(true);
     setRiskWarning(null);
     try {
@@ -368,7 +409,9 @@ const PortfolioPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [queryAccountId, costMethod]);
+
+    await upgradeSnapshotToRealtime(requestKey, queryAccountId, costMethod);
+  }, [queryAccountId, costMethod, upgradeSnapshotToRealtime]);
 
   const loadEventsPage = useCallback(async (page: number) => {
     setEventLoading(true);
@@ -504,6 +547,16 @@ const PortfolioPage: React.FC = () => {
     return Array.from(lookups.values());
   }, [positionRows]);
 
+  // Snapshot re-fetches (e.g. the realtime-price upgrade after the fast
+  // history_close paint) produce a new positionSignalLookups array reference
+  // even when the held symbols are unchanged. Depend on this stable content
+  // signature instead, so signal lookups don't get needlessly re-fetched on
+  // every price refresh.
+  const positionSignalLookupsKey = useMemo(
+    () => positionSignalLookups.map((item) => `${item.market}:${item.stockCode}`).join(','),
+    [positionSignalLookups],
+  );
+
   useEffect(() => {
     const requestId = portfolioSignalsRequestRef.current + 1;
     portfolioSignalsRequestRef.current = requestId;
@@ -548,7 +601,8 @@ const PortfolioPage: React.FC = () => {
     return () => {
       portfolioSignalsRequestRef.current += 1;
     };
-  }, [portfolioSignalsRefreshKey, positionSignalLookups, snapshotMatchesAccountScope, t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [portfolioSignalsRefreshKey, positionSignalLookupsKey, snapshotMatchesAccountScope, t]);
 
   const signalByPositionKey = useMemo(() => {
     const mapped = new Map<string, DecisionSignalItem>();
@@ -883,6 +937,33 @@ const PortfolioPage: React.FC = () => {
         const parsed = getParsedApiError(riskErr);
         setRiskWarning(parsed.message || '风险数据获取失败，已降级为仅展示快照数据。');
       }
+
+      try {
+        const realtimeSnapshot = await portfolioApi.getSnapshot({
+          accountId: requestedAccountId,
+          costMethod: requestedCostMethod,
+          includeRealtime: true,
+        });
+        if (isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
+          setSnapshot(realtimeSnapshot);
+        }
+      } catch {
+        // Best-effort upgrade; keep whatever the fast fetch already displayed.
+      }
+      try {
+        const realtimeRisk = await portfolioApi.getRisk({
+          accountId: requestedAccountId,
+          costMethod: requestedCostMethod,
+          includeRealtime: true,
+        });
+        if (isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
+          setRisk(realtimeRisk);
+          setRiskWarning(null);
+        }
+      } catch {
+        // Keep whatever risk data (or warning) the fast fetch already produced.
+      }
+
       return true;
     } catch (err) {
       if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {

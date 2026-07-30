@@ -212,17 +212,31 @@ class PytdxFetcher(BaseFetcher):
             for i in range(len(self._hosts)):
                 host_idx = (self._current_host_idx + i) % len(self._hosts)
                 host, port = self._hosts[host_idx]
-                
+
                 try:
-                    if api.connect(host, port, time_out=5):
-                        connected = True
-                        self._current_host_idx = host_idx
-                        logger.debug(f"Pytdx 连接成功: {host}:{port}")
-                        break
+                    if not api.connect(host, port, time_out=5):
+                        continue
+                    # ⚠️ 仅凭 connect 成功不足以判定服务器可用：通达信公开服务器
+                    # 里存在「TCP 握手正常但任何查询都返回空」的僵尸节点，实测
+                    # 123.125.108.14 / 124.71.187.122 / 110.41.147.114 都是这种。
+                    # 早先此处 connect 成功即 break，于是永远锁死在列表里第一个
+                    # 僵尸节点上，真正可用的节点排在后面也轮不到，最终表现为
+                    # 「未查询到 <code> 的数据」——看起来像标的问题，实为选错服务器。
+                    if not self._probe_server(api):
+                        logger.debug("Pytdx %s:%s 连接正常但探针无数据，换下一台", host, port)
+                        try:
+                            api.disconnect()
+                        except Exception:
+                            pass
+                        continue
+                    connected = True
+                    self._current_host_idx = host_idx
+                    logger.debug(f"Pytdx 连接成功: {host}:{port}")
+                    break
                 except Exception as e:
                     logger.debug(f"Pytdx 连接 {host}:{port} 失败: {e}")
                     continue
-            
+
             if not connected:
                 self._mark_connection_cooldown("Pytdx 无法连接任何服务器")
                 raise DataFetchError("Pytdx 无法连接任何服务器")
@@ -237,6 +251,28 @@ class PytdxFetcher(BaseFetcher):
             except Exception as e:
                 logger.warning(f"Pytdx 断开连接时出错: {e}")
     
+    # 探针标的：上证指数成分里最不可能退市/停牌的大盘股，用它验证服务器
+    # 是否真能返回数据。取 1 根日线，开销可忽略。
+    _PROBE_MARKET = 1
+    _PROBE_CODE = "600519"
+
+    def _probe_server(self, api) -> bool:
+        """验证已连接的服务器能否真正返回数据。
+
+        僵尸节点的表现是 TCP 连接与协议握手都正常，但任何 K 线查询都返回空
+        列表。只看 ``connect()`` 的返回值会把它们当成健康节点，因此这里补一次
+        最小查询作为判据。
+
+        探针本身失败（异常/超时）一律按不可用处理，让调用方换下一台——这里
+        宁可多试一台，也不要把僵尸节点锁进 ``_current_host_idx``。
+        """
+        try:
+            bars = api.get_security_bars(9, self._PROBE_MARKET, self._PROBE_CODE, 0, 1)
+        except Exception as exc:
+            logger.debug("Pytdx 服务器探针异常: %s", exc)
+            return False
+        return bool(bars)
+
     def _get_market_code(self, stock_code: str) -> Tuple[int, str]:
         """
         根据股票代码判断市场

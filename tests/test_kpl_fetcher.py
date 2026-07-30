@@ -283,38 +283,24 @@ class TestKplFetcherStockInfo(unittest.TestCase):
         f = self._fetcher({"code": "600519", "name": "  "})
         self.assertIsNone(f.get_stock_name("600519"))
 
-    def test_belong_board_method_name_is_singular(self) -> None:
-        """管理器按 `get_belong_board`（单数）做 hasattr 探测，改名会静默失效。"""
-        self.assertTrue(hasattr(KplFetcher, "get_belong_board"))
+    def test_belong_board_deliberately_not_implemented(self) -> None:
+        """个股所属板块有意不接 KPL —— 管理器按 `get_belong_board`（单数）做
+        hasattr 探测，不定义即自动回落 EfinanceFetcher 的东财口径。
 
-    def test_belong_board_mapped(self) -> None:
-        payload = {"stock_id": "600519", "count": 2, "sectors": [
-            {"sector_code": "801862", "sector_name": "高股息精选", "change_pct": -1.98},
-            {"sector_code": "801035", "sector_name": "酿酒", "change_pct": -2.71},
-        ]}
-        boards = self._fetcher(payload).get_belong_board("600519")
-        self.assertEqual(boards, [
-            {"name": "高股息精选", "code": "801862"},
-            {"name": "酿酒", "code": "801035"},
-        ])
+        上游 /plate-list/stock-sector-v2 能返回数据，但按**板块当日涨跌幅降序**
+        排列：让「今天哪个板块涨得多」决定「这只股票属于什么」，与所属板块的
+        语义无关；涨跌幅盘中实时变化会让顺序跟着变，而下游 notification 只取
+        belong_boards[:5]，分析结果因此不可复现。实测 002364（电源设备公司）
+        KPL 前 5 是「拼多多概念/杭州/电源/光储充一体化/通信」，东财是
+        「电力设备/其他电源设备Ⅲ/其他电源设备Ⅱ/浙江板块/换电概念」——44 条里
+        只有「电气设备」沾行业分类，接入反而是降级。
 
-    def test_belong_board_dedupes_and_skips_blank(self) -> None:
-        payload = {"sectors": [
-            {"sector_code": "801035", "sector_name": "酿酒"},
-            {"sector_code": "801035", "sector_name": "酿酒"},
-            {"sector_code": "801999", "sector_name": "  "},
-        ]}
-        boards = self._fetcher(payload).get_belong_board("600519")
-        self.assertEqual(boards, [{"name": "酿酒", "code": "801035"}])
-
-    def test_belong_board_none_when_empty(self) -> None:
-        self.assertIsNone(self._fetcher({"sectors": []}).get_belong_board("600519"))
-
-    def test_belong_board_none_on_upstream_error(self) -> None:
-        c = MagicMock()
-        c.is_credential_valid.return_value = True
-        c.get.side_effect = KplRequestError("boom")
-        self.assertIsNone(KplFetcher(client=c).get_belong_board("600519"))
+        定义这个方法会立刻把东财顶掉，所以用测试把「不实现」钉住。
+        """
+        self.assertFalse(
+            hasattr(KplFetcher, "get_belong_board"),
+            "定义 get_belong_board 会让 KPL 顶掉东财的行业口径，见本用例说明",
+        )
 
 
 class TestKplFetcherResearchReports(unittest.TestCase):

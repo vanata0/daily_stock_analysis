@@ -39,7 +39,7 @@ from .base import (
     normalize_stock_code,
 )
 from .kpl_http import KplError, KplHttpClient, kpl_date_to_iso
-from .realtime_types import RealtimeSource, UnifiedRealtimeQuote
+from .realtime_types import ChipDistribution, RealtimeSource, UnifiedRealtimeQuote
 
 logger = logging.getLogger(__name__)
 
@@ -407,44 +407,26 @@ class KplFetcher(BaseFetcher):
         )
         return result
 
-    def get_belong_board(self, stock_code: str) -> Optional[List[Dict[str, Any]]]:
-        """获取个股所属板块。
-
-        方法名是单数 ``get_belong_board`` —— DataFetcherManager 用这个名字做
-        hasattr 探测，管理器侧对外的方法才叫 ``get_belong_boards``。
-
-        Returns:
-            [{"name": 板块名, "code": 板块代码}, ...]；失败返回 None
-        """
-        if not self.is_available():
-            return None
-        code = normalize_stock_code(stock_code)
-        if not code or not code.isdigit() or len(code) != 6:
-            return None
-
-        try:
-            data = self._client.get(f"/plate-list/stock-sector-v2/{code}")
-        except KplError as exc:
-            logger.warning("[KplFetcher] 获取所属板块失败 %s: %s", stock_code, exc)
-            return None
-
-        boards: List[Dict[str, Any]] = []
-        seen = set()
-        for item in data.get("sectors") or []:
-            name = str(item.get("sector_name") or "").strip()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            board: Dict[str, Any] = {"name": name}
-            board_code = str(item.get("sector_code") or "").strip()
-            if board_code:
-                board["code"] = board_code
-            boards.append(board)
-
-        if not boards:
-            logger.debug("[KplFetcher] %s 无所属板块数据", stock_code)
-            return None
-        return boards
+    # 说明：有意不实现 get_belong_board（个股所属板块）。
+    #
+    # 上游 /plate-list/stock-sector-v2 能返回数据，但排序语义与该能力的用途
+    # 不匹配，接入反而是降级——DataFetcherManager 用 hasattr 探测这个方法名，
+    # 不定义即自动回落到 EfinanceFetcher 的东财口径。
+    #
+    # 实测 002364（中恒电气，电源设备公司）对比：
+    #   KPL  前5: 拼多多概念 | 杭州 | 电源 | 光储充一体化 | 通信
+    #   东财 前5: 电力设备 | 其他电源设备Ⅲ | 其他电源设备Ⅱ | 浙江板块 | 换电概念
+    #
+    # 三个叠加的问题：
+    #   1. 上游按**板块当日涨跌幅降序**排列，即「今天哪个板块涨得多」决定了
+    #      「这只股票属于什么」，与所属板块的语义无关；
+    #   2. 涨跌幅盘中实时变化，同一标的不同时刻取到的顺序不同，而下游
+    #      src/notification.py 只取 belong_boards[:5]，导致分析结果不可复现；
+    #   3. 返回的 44 条几乎全是概念标签，只有「电气设备」沾边，缺东财那种
+    #      申万行业层级，而行业归属恰恰是该字段最有价值的部分。
+    #
+    # 若将来上游提供行业类型标识（可据此做「行业优先、概念次之」的重排），
+    # 可以重新评估接入。
 
     # ------------------------------------------------------------------
     # 市场维度
@@ -598,6 +580,84 @@ class KplFetcher(BaseFetcher):
     # 题材热度分（score），不是涨跌幅；DSA 的契约要求 {"name", "change_pct"}，
     # 把热度分填进 change_pct 会让下游把它当涨跌幅解读。保持不实现，由
     # BaseFetcher 的默认 None 让管理器自动降级到其它数据源。
+
+    # ------------------------------------------------------------------
+    # 筹码分布
+    # ------------------------------------------------------------------
+
+    def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
+        """获取个股筹码分布（持仓成本分布）。
+
+        ⚠️ 上游是**本地计算**而非服务器接口：开盘啦对成本分布既无 HTTP 也无
+        Socket 接口，App 自身也是拿日 K 本地算的，该端点用同族算法（三角形
+        分布 + 换手衰减）基于 1000 根日线复现，上游自述与 App 实测偏差平均
+        约 4%。因此它不受 KPL 凭证过期影响，但也不是「官方数据」。
+
+        与另两个源的关系（2026-07-27 收盘时点对拍，四只标的）：三方均通过
+        自洽性检验（70% 区间 ⊆ 90% 区间、均成本落在 90% 区间内、集中度等于
+        (高-低)/(高+低)），本源与 AkShare 系统性接近而 Tushare 离群，例如
+        收盘价在 90% 区间中的位置：浪潮信息 KPL 0.685 / AkShare 0.716 /
+        Tushare 0.382。三者都是算法输出、无绝对真值，这里不主张谁更准；
+        选它排在最前的理由是不依赖将失效的 Tushare 凭证、耗时 0.1 秒
+        （AkShare 6~11 秒、Tushare 17~28 秒）、且结果稳定可复现。
+
+        单位换算：上游 ``profit_pct`` 与 ``concentration`` 都是百分数，
+        ChipDistribution 的 ``profit_ratio`` / ``concentration_*`` 是小数。
+
+        Returns:
+            ChipDistribution；不可用或数据无效时返回 None（由上层降级）
+        """
+        if not self.is_available():
+            return None
+        code = normalize_stock_code(stock_code)
+        if not code or not code.isdigit() or len(code) != 6:
+            return None
+
+        try:
+            # decay 有意不透传：0.8~1.2 会让获利比在 0.197~0.284 间摆动（差 45%），
+            # 暴露成可调项会让同一标的不同调用给出不同结论。默认 1.0 是标准
+            # 筹码算法（换手率直接衰减）。
+            payload = self._client.get(f"/kline/stock-chip-distribution/{code}")
+        except KplError as exc:
+            logger.warning("[KplFetcher] 获取筹码分布失败 %s: %s", stock_code, exc)
+            return None
+
+        avg_cost = _to_float(payload.get("avg_cost"))
+        if avg_cost is None or avg_cost <= 0:
+            logger.debug("[KplFetcher] %s 筹码分布无有效均成本，跳过", stock_code)
+            return None
+
+        r90 = payload.get("range_90") or {}
+        r70 = payload.get("range_70") or {}
+
+        return ChipDistribution(
+            code=code,
+            date=self._latest_chip_date(code),
+            source="kpl",
+            profit_ratio=_pct_to_ratio(payload.get("profit_pct")),
+            avg_cost=avg_cost,
+            cost_90_low=_to_float(r90.get("low")) or 0.0,
+            cost_90_high=_to_float(r90.get("high")) or 0.0,
+            concentration_90=_pct_to_ratio(r90.get("concentration")),
+            cost_70_low=_to_float(r70.get("low")) or 0.0,
+            cost_70_high=_to_float(r70.get("high")) or 0.0,
+            concentration_70=_pct_to_ratio(r70.get("concentration")),
+        )
+
+    def _latest_chip_date(self, code: str) -> str:
+        """筹码所基于的最新交易日。
+
+        上游只回 ``close`` 不回日期，这里取日线末条补上——下游报告要显示
+        数据日期，缺了会让读者无法判断新鲜度。取数失败不影响主结果。
+        """
+        try:
+            payload = self._client.get(f"/kline/daily/{code}")
+        except KplError:
+            return ""
+        days = payload.get("days") or []
+        if not days:
+            return ""
+        return kpl_date_to_iso(days[-1].get("date")) or ""
 
     # ------------------------------------------------------------------
     # 基本面：成长 / 业绩 / 机构
@@ -783,6 +843,16 @@ def _pct_to_float(value: Any) -> Optional[float]:
     if text.endswith("%"):
         text = text[:-1].strip()
     return _to_float(text)
+
+
+def _pct_to_ratio(value: Any) -> float:
+    """上游百分数转小数（24.11 → 0.2411）；无法解析按 0.0 处理。
+
+    ChipDistribution 的 profit_ratio / concentration_* 都是 0~1 的小数，
+    而上游给的是百分数，直接透传会让下游把 24.11 当成 2411% 的获利盘。
+    """
+    parsed = _pct_to_float(value)
+    return parsed / 100.0 if parsed is not None else 0.0
 
 
 def _recent_quarter_pairs(today: Optional[date] = None, limit: int = 4):

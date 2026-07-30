@@ -17,6 +17,8 @@ KPL 的 UserID/Token/DeviceID 来自抓包，会过期。过期后上游**不报
   - 判据 rise_count == 0 且 fall_count == 0
     （A 股任一交易日两者之和都在 4000 以上，同时为 0 只可能是凭证失效或上游故障）
   - 非交易日不做判定（休市本就没有涨跌家数），避免把节假日误判成失效
+  - 交易日 09:30 之前同样不做判定：上游会在早盘前把上一交易日的涨跌家数清零，
+    此时全 0 是正常状态；漏掉这段会让每个交易日开盘前 KPL 全线不可用并误发告警
 
 探测结果按 TTL 缓存，不会每次取数都打一次探针。
 
@@ -48,6 +50,10 @@ _PROBE_TTL_SECONDS = 300
 # 探针判据：A 股任一交易日 rise_count + fall_count 都远超此值，
 # 低于它说明拿到的是空数据而非真实行情。
 _MIN_TRADING_BREADTH = 100
+
+# A 股连续竞价开始时刻。此前涨跌家数为 0 属正常（集合竞价 09:25 才出结果，
+# 上游在早盘前会把上一交易日的数值清零），不能据此判定凭证失效。
+_MARKET_OPEN_HHMM = (9, 30)
 
 
 class KplError(Exception):
@@ -182,6 +188,17 @@ class KplHttpClient:
             )
             return True
 
+        # 再排除交易日的开盘前时段：上游会在当天早盘前把上一交易日的涨跌家数
+        # 清零，此时全 0 是正常状态而非凭证失效。实测 2026-07-28 09:01
+        # （交易日、未开盘）该端点返回 rise=0/fall=0 且 errcode='0'，凭证完全
+        # 有效。漏掉这一段会让每个交易日 9:30 之前 KPL 全线不可用并误发告警。
+        if self._is_before_market_open():
+            logger.info(
+                "[KPL] 探针返回空数据但尚未开盘，不判定为凭证失效 "
+                "(rise=%d fall=%d)", rise, fall,
+            )
+            return True
+
         reason = (
             f"交易日探针涨跌家数为空 (rise={rise} fall={fall})。"
             "上游接口在凭证过期时会静默返回空数据，"
@@ -208,6 +225,15 @@ class KplHttpClient:
             callback(reason)
         except Exception as exc:
             logger.warning("[KPL] 凭证失效回调执行失败: %s", exc)
+
+    def _is_before_market_open(self, now: Optional[datetime] = None) -> bool:
+        """当前是否处于交易日的开盘前时段（A 股 09:30 连续竞价开始之前）。
+
+        涨跌家数要到集合竞价结束（09:25）后才有意义，上游则在早盘前就把上一
+        交易日的数值清零，因此 09:30 之前的全 0 不能作为凭证失效的判据。
+        """
+        now = now or datetime.now()
+        return (now.hour, now.minute) < _MARKET_OPEN_HHMM
 
     def _is_trading_day(self, day: Optional[date] = None) -> bool:
         """判断是否 A 股交易日（周末 + KPL 节假日表）。"""

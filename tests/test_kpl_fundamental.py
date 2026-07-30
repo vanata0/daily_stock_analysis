@@ -444,3 +444,108 @@ class TestBundleMergePrefersKplKeepsAkshare(unittest.TestCase):
         with patch("src.config.get_config", return_value=SimpleNamespace(kpl_enabled=True)), \
                 patch("data_provider.kpl_fetcher.KplFetcher", side_effect=RuntimeError("boom")):
             self.assertIsNone(a._get_fundamental_bundle_kpl("000977"))
+
+
+class TestKplChipDistribution(unittest.TestCase):
+    """KPL 筹码分布（持仓成本分布）。
+
+    ⚠️ 上游是**本地计算**：开盘啦对成本分布既无 HTTP 也无 Socket 接口，该端点
+    用同族算法（三角形分布+换手衰减）基于日线复现。因此它不受凭证过期影响，
+    但也不是官方数据。
+
+    与另两源三方对拍（2026-07-27 收盘时点）显示三方均自洽，本源与 AkShare
+    趋同而 Tushare 离群；因为都是算法输出、无绝对真值，这里不断言谁更准，
+    只锁定单位换算与契约。
+    """
+
+    SAMPLE = {
+        "stock_id": "002364", "close": 40.0, "avg_cost": 48.865, "profit_pct": 24.11,
+        "range_90": {"low": 37.042, "high": 58.213, "concentration": 22.23},
+        "range_70": {"low": 38.722, "high": 56.019, "concentration": 18.26},
+        "day_count": 1000,
+    }
+
+    def _fetcher(self, chip=None, kline=None, valid=True):
+        client = MagicMock()
+        client.is_credential_valid.return_value = valid
+
+        def fake_get(path, params=None):
+            if "stock-chip-distribution" in path:
+                if chip is None:
+                    raise KplRequestError("chip down")
+                return chip
+            if "kline/daily" in path:
+                return kline if kline is not None else {"days": [{"date": "20260727"}]}
+            return {}
+
+        client.get.side_effect = fake_get
+        return KplFetcher(client=client)
+
+    def test_percent_fields_converted_to_ratio(self) -> None:
+        """上游 profit_pct / concentration 是百分数，契约要求 0~1 小数。
+
+        直接透传会让下游把 24.11 当成 2411% 的获利盘。
+        """
+        c = self._fetcher(self.SAMPLE).get_chip_distribution("002364")
+        self.assertAlmostEqual(c.profit_ratio, 0.2411, places=4)
+        self.assertAlmostEqual(c.concentration_90, 0.2223, places=4)
+        self.assertAlmostEqual(c.concentration_70, 0.1826, places=4)
+
+    def test_price_fields_passed_through(self) -> None:
+        c = self._fetcher(self.SAMPLE).get_chip_distribution("002364")
+        self.assertAlmostEqual(c.avg_cost, 48.865)
+        self.assertAlmostEqual(c.cost_90_low, 37.042)
+        self.assertAlmostEqual(c.cost_90_high, 58.213)
+        self.assertAlmostEqual(c.cost_70_low, 38.722)
+        self.assertAlmostEqual(c.cost_70_high, 56.019)
+
+    def test_source_is_kpl(self) -> None:
+        """ChipDistribution.source 默认值是 "akshare"，不显式赋值会让来源追溯失真。"""
+        self.assertEqual(self._fetcher(self.SAMPLE).get_chip_distribution("002364").source, "kpl")
+
+    def test_date_filled_from_kline(self) -> None:
+        """上游只回 close 不回日期，需补上数据日期供报告显示新鲜度。"""
+        c = self._fetcher(self.SAMPLE).get_chip_distribution("002364")
+        self.assertEqual(c.date, "2026-07-27")
+
+    def test_date_failure_does_not_lose_chip(self) -> None:
+        """补日期是附加动作，失败不能拖掉筹码本身。"""
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+
+        def fake_get(path, params=None):
+            if "stock-chip-distribution" in path:
+                return self.SAMPLE
+            raise KplRequestError("kline down")
+
+        client.get.side_effect = fake_get
+        c = KplFetcher(client=client).get_chip_distribution("002364")
+        self.assertIsNotNone(c)
+        self.assertEqual(c.date, "")
+        self.assertAlmostEqual(c.avg_cost, 48.865)
+
+    def test_decay_not_exposed(self) -> None:
+        """decay 有意不透传：0.8~1.2 会让获利比在 0.197~0.284 间摆动（差 45%）。
+
+        暴露成可调项会让同一标的不同调用给出不同结论。
+        """
+        f = self._fetcher(self.SAMPLE)
+        f.get_chip_distribution("002364")
+        for call in f._client.get.call_args_list:
+            self.assertNotIn("decay", (call.kwargs.get("params") or {}))
+            self.assertNotIn("decay", call.args[0])
+
+    def test_invalid_avg_cost_returns_none(self) -> None:
+        for bad in ({**SAMPLE_ZERO}, {**SAMPLE_ZERO, "avg_cost": None}):
+            self.assertIsNone(self._fetcher(bad).get_chip_distribution("002364"))
+
+    def test_none_when_unavailable_or_upstream_error(self) -> None:
+        self.assertIsNone(self._fetcher(self.SAMPLE, valid=False).get_chip_distribution("002364"))
+        self.assertIsNone(self._fetcher(None).get_chip_distribution("002364"))
+
+    def test_non_a_share_rejected(self) -> None:
+        for bad in ("AAPL", "00700", ""):
+            self.assertIsNone(self._fetcher(self.SAMPLE).get_chip_distribution(bad))
+
+
+SAMPLE_ZERO = {"avg_cost": 0, "profit_pct": 0, "range_90": {}, "range_70": {}}

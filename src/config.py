@@ -75,11 +75,6 @@ from src.utils.market_review_region import normalize_market_review_region_lenien
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ALPHASIFT_INSTALL_SPEC = (
-    "git+https://github.com/ZhuLinsen/alphasift.git@9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf"
-)
-
-
 @dataclass
 class ConfigIssue:
     """Structured configuration validation issue with a severity level.
@@ -741,9 +736,8 @@ class Config:
     longbridge_oauth_client_id: Optional[str] = None
     stock_index_remote_update_enabled: bool = True
 
-    # === AlphaSift optional stock screening integration ===
-    alphasift_enabled: bool = False
-    alphasift_install_spec: str = DEFAULT_ALPHASIFT_INSTALL_SPEC
+    # === Built-in stock screening ===
+    screening_enabled: bool = False
 
     # === AI 分析配置 ===
     generation_backend: str = LITELLM_BACKEND_ID
@@ -869,7 +863,7 @@ class Config:
     agent_deep_research_budget: int = 30000  # Max token budget for deep research
     agent_deep_research_timeout: int = 180  # Max seconds for /research command before returning timeout
     agent_memory_enabled: bool = False  # Enable memory & calibration system
-    agent_skill_autoweight: bool = True  # Auto-weight skills by backtest performance
+    agent_skill_autoweight: bool = True  # Weight skills by attributable Outcome performance
     agent_skill_routing: str = "auto"  # Skill routing: 'auto' (regime-based) or 'manual'
     agent_context_compression_enabled: bool = False  # Compress visible chat history before Agent calls
     agent_context_compression_profile: str = AGENT_CONTEXT_COMPRESSION_DEFAULT_PROFILE
@@ -2075,12 +2069,7 @@ class Config:
                 minimum=1,
             ),
             portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true',
-            alphasift_enabled=parse_env_bool(os.getenv('ALPHASIFT_ENABLED'), default=False),
-            alphasift_install_spec=(
-                DEFAULT_ALPHASIFT_INSTALL_SPEC
-                if os.getenv('ALPHASIFT_INSTALL_SPEC') is None
-                else os.getenv('ALPHASIFT_INSTALL_SPEC', '').strip()
-            ),
+            screening_enabled=parse_env_bool(os.getenv('SCREENING_ENABLED'), default=False),
         )
     
     @classmethod
@@ -2859,7 +2848,7 @@ class Config:
         raw = (value or "").strip()
         if raw and not is_supported_report_language_value(raw):
             logging.getLogger(__name__).warning(
-                "REPORT_LANGUAGE '%s' invalid, fallback to 'zh' (valid: zh/en)",
+                "REPORT_LANGUAGE '%s' invalid, fallback to 'zh' (valid: zh/en/ko)",
                 value,
             )
         return normalized

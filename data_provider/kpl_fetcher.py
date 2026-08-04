@@ -433,11 +433,14 @@ class KplFetcher(BaseFetcher):
     # ------------------------------------------------------------------
 
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
-        """获取板块涨跌排行。
+        """获取行业板块涨跌排行。
 
-        用 /plate-list/pc-plate-ranking 而不是 /plate-list/top-sectors：后者是
-        「精选强势板块」，实测无论 page_size 传多大都只回 8~10 条，拿它的最低
-        值当领跌是错的；前者是全市场排行（实测 200 条，涨跌幅 -4.74%~0.93%）。
+        用 /limit-up/weight-performance-realtime 而不是 /plate-list/pc-plate-ranking：
+        后者是「板块」大杂烩（申万行业 + 概念 + 地域混杂，实测 002364 前5 里出现过
+        「杭州」这种地域标签，见上方 get_belong_board 弃用说明的同一份实测数据），
+        用它当"行业板块"会把地域/概念标签也当行业展示；前者是固定 30 个申万二级
+        行业的扁平实时列表，字段干净（sector_name/change_pct 已是成品，无需再从
+        raw_fields 按位置猜语义），不掺概念/地域。
 
         Returns:
             (领涨列表, 领跌列表)，元素为 {"name", "change_pct"}；失败返回 None
@@ -445,27 +448,68 @@ class KplFetcher(BaseFetcher):
         if not self.is_available():
             return None
         try:
-            data = self._client.get("/plate-list/pc-plate-ranking", params={"page_size": 200})
+            data = self._client.get("/limit-up/weight-performance-realtime", params={"page_size": 50})
         except KplError as exc:
-            logger.warning("[KplFetcher] 获取板块排行失败: %s", exc)
+            logger.warning("[KplFetcher] 获取行业板块排行失败: %s", exc)
             return None
 
         rows = []
         for item in data.get("items") or []:
-            name = str(item.get("name") or "").strip()
+            name = str(item.get("sector_name") or "").strip()
             change_pct = _to_float(item.get("change_pct"))
             if name and change_pct is not None:
                 rows.append({"name": name, "change_pct": change_pct})
 
         if not rows:
-            logger.debug("[KplFetcher] 板块排行无有效数据")
+            logger.debug("[KplFetcher] 行业板块排行无有效数据")
             return None
 
-        # 上游按强度排序而非涨跌幅，这里自行排序取两端
+        # 上游按板块代码排序而非涨跌幅，这里自行排序取两端
         ordered = sorted(rows, key=lambda x: x["change_pct"], reverse=True)
         top = ordered[:n]
         bottom = list(reversed(ordered[-n:])) if len(ordered) > n else list(reversed(ordered))
-        logger.info("[KplFetcher] 板块排行获取成功: %d 个板块", len(rows))
+        logger.info("[KplFetcher] 行业板块排行获取成功: %d 个行业", len(rows))
+        return top, bottom
+
+    def get_concept_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """获取概念/题材涨跌排行。
+
+        用 /market-stats/theme-list（Socket 专属，cmd 3009）：它是纯"题材"分类
+        （如"AI硬件""人形机器人""DeepSeek概念"），与 get_sector_rankings 用的
+        /plate-list/pc-plate-ranking（行业/概念混杂的"板块"分类）是两套独立编号
+        体系，不会产生重复。``ratio`` 即涨跌幅（已换算，无需再除以 100）。
+        未配置 Socket 签名时该接口返回 configured=false，此时判为不可用。
+
+        Returns:
+            (领涨列表, 领跌列表)，元素为 {"name", "change_pct"}；失败返回 None
+        """
+        if not self.is_available():
+            return None
+        try:
+            data = self._client.get("/market-stats/theme-list")
+        except KplError as exc:
+            logger.warning("[KplFetcher] 获取题材排行失败: %s", exc)
+            return None
+
+        if not data.get("configured", True):
+            logger.debug("[KplFetcher] 题材排行 Socket 签名未配置")
+            return None
+
+        rows = []
+        for item in data.get("items") or []:
+            name = str(item.get("name") or "").strip()
+            change_pct = _to_float(item.get("ratio"))
+            if name and change_pct is not None:
+                rows.append({"name": name, "change_pct": change_pct})
+
+        if not rows:
+            logger.debug("[KplFetcher] 题材排行无有效数据")
+            return None
+
+        ordered = sorted(rows, key=lambda x: x["change_pct"], reverse=True)
+        top = ordered[:n]
+        bottom = list(reversed(ordered[-n:])) if len(ordered) > n else list(reversed(ordered))
+        logger.info("[KplFetcher] 题材排行获取成功: %d 个题材", len(rows))
         return top, bottom
 
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
@@ -575,11 +619,6 @@ class KplFetcher(BaseFetcher):
             return None
         logger.info("[KplFetcher] 涨停池获取成功: %d 只", len(pool))
         return pool[:n]
-
-    # 说明：未实现 get_concept_rankings。上游 /theme/concept-fengkou 返回的是
-    # 题材热度分（score），不是涨跌幅；DSA 的契约要求 {"name", "change_pct"}，
-    # 把热度分填进 change_pct 会让下游把它当涨跌幅解读。保持不实现，由
-    # BaseFetcher 的默认 None 让管理器自动降级到其它数据源。
 
     # ------------------------------------------------------------------
     # 筹码分布

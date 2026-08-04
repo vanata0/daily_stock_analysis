@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 大盘分析新增概念/题材涨跌榜数据源：`KplFetcher.get_concept_rankings()` 接入 KPL `/market-stats/theme-list`（独立于板块排行用的 `pc-plate-ranking`，编号体系不重叠），修复概念板块此前唯一数据源 Akshare `stock_board_concept_name_em()` 被上游拦截（`RemoteDisconnected`）导致连续多日完全空榜的问题。
 - [修复] 基本面 earnings 块长期为空导致整次分析被判「部分降级」：`stock_yjyg_em` / `stock_yjkb_em` / `stock_yjbb_em` 在 akshare 1.18.64 的签名是按报告期取全市场表（`date`），适配器却按个股传 `symbol`，必然 `TypeError`；回退的无参候选又只会取到接口自带的默认报告期（2020Q1 / 2021Q4），于是 `earnings` 恒为 `{}`，把基本面判成 `partial`，再经 AnalysisContextPack 放大成运行诊断顶部的「部分降级」。现改为按最近 2 个报告期显式传 `date` 并逐期回退。同时调整取数顺序：业绩报表（强制披露、字段结构化）作为 earnings 主源，业绩预告 / 快报（自愿披露，茅台一类公司本就没有）降为其后的补充，避免为必然落空的两路各付一次全市场表拉取。实测贵州茅台基本面整体由 `partial` 转为 `ok`。
 - [修复] 十大股东 `stock_gdfx_top_10_em` 恒定 `KeyError('sdgd')`：该接口要的是带交易所前缀的 symbol（`sh600519`），适配器传的是裸 6 位码，且未传 `date` 时停在 2021H1。现复用 akshare_fetcher 既有的前缀转换并按报告期回退，`institution.top10_holder_change` 恢复取值。
 - [改进] 候选链在拿到全市场表后会校验目标股票是否真的在表中，不再「第一个非空 DataFrame 即停」——报告期不对或该公司当期未披露时，后面本可命中的候选此前永远跑不到。

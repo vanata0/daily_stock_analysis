@@ -367,15 +367,15 @@ class TestKplFetcherResearchReports(unittest.TestCase):
 
 
 class TestKplFetcherSectorRankings(unittest.TestCase):
-    """板块排行 —— 上游按强度排序，必须自行按涨跌幅重排。"""
+    """行业板块排行 —— 上游按板块代码排序，必须自行按涨跌幅重排。"""
 
-    # 刻意让强度序与涨跌幅序不一致，才能验证重排真的发生了
+    # 刻意让代码序与涨跌幅序不一致，才能验证重排真的发生了
     ROWS = {"items": [
-        {"code": "801001", "name": "芯片",   "strength": 6376, "change_pct": -1.906},
-        {"code": "801250", "name": "并购重组", "strength": 5757, "change_pct": -2.257},
-        {"code": "801900", "name": "中船系",  "strength": 100,  "change_pct": 0.925},
-        {"code": "801800", "name": "铀矿",    "strength": 200,  "change_pct": -4.739},
-        {"code": "801700", "name": "工业气体", "strength": 300,  "change_pct": 0.193},
+        {"sector_code": "881001", "sector_name": "芯片",   "change_pct": -1.906},
+        {"sector_code": "881250", "sector_name": "并购重组", "change_pct": -2.257},
+        {"sector_code": "881900", "sector_name": "中船系",  "change_pct": 0.925},
+        {"sector_code": "881800", "sector_name": "铀矿",    "change_pct": -4.739},
+        {"sector_code": "881700", "sector_name": "工业气体", "change_pct": 0.193},
     ]}
 
     def _fetcher(self, payload=None, valid=True):
@@ -384,16 +384,17 @@ class TestKplFetcherSectorRankings(unittest.TestCase):
         c.get.return_value = payload if payload is not None else self.ROWS
         return KplFetcher(client=c)
 
-    def test_uses_full_market_ranking_endpoint(self) -> None:
-        """必须打 pc-plate-ranking。
+    def test_uses_weight_performance_realtime_endpoint(self) -> None:
+        """必须打 weight-performance-realtime。
 
-        /plate-list/top-sectors 是「精选强势板块」，实测无论 page_size 多大都
-        只回 8~10 条，用它的最低值当领跌会得到错误结论。
+        /plate-list/pc-plate-ranking 是行业+概念+地域混杂的「板块」大杂烩
+        （实测出现过「杭州」这类地域标签），用来标「行业板块」会掺入非行业
+        标签；weight-performance-realtime 是固定 30 个申万二级行业的干净列表。
         """
         f = self._fetcher()
         f.get_sector_rankings(2)
         called = f._client.get.call_args[0][0]
-        self.assertIn("pc-plate-ranking", called)
+        self.assertIn("weight-performance-realtime", called)
 
     def test_top_sorted_desc_by_change_pct(self) -> None:
         top, _ = self._fetcher().get_sector_rankings(3)
@@ -411,9 +412,9 @@ class TestKplFetcherSectorRankings(unittest.TestCase):
 
     def test_rows_missing_change_pct_dropped(self) -> None:
         payload = {"items": [
-            {"name": "有效", "change_pct": 1.0},
-            {"name": "无涨跌幅"},
-            {"name": "", "change_pct": 2.0},
+            {"sector_name": "有效", "change_pct": 1.0},
+            {"sector_name": "无涨跌幅"},
+            {"sector_name": "", "change_pct": 2.0},
         ]}
         top, _ = self._fetcher(payload).get_sector_rankings(5)
         self.assertEqual([r["name"] for r in top], ["有效"])
@@ -422,14 +423,60 @@ class TestKplFetcherSectorRankings(unittest.TestCase):
         self.assertIsNone(self._fetcher(valid=False).get_sector_rankings(3))
         self.assertIsNone(self._fetcher({"items": []}).get_sector_rankings(3))
 
-    def test_concept_rankings_intentionally_not_implemented(self) -> None:
-        """上游只有题材热度分（score），没有涨跌幅。
 
-        契约要求 {"name", "change_pct"}，把热度分填进 change_pct 会被下游当成
-        涨跌幅解读，因此保持不实现，由 BaseFetcher 默认 None 触发降级。
-        """
-        self.assertIsNone(self._fetcher().get_concept_rankings(3))
+class TestKplFetcherConceptRankings(unittest.TestCase):
+    """概念/题材排行 —— theme-list 是独立编号体系，语义与板块排行不同。"""
 
+    ROWS = {"configured": True, "items": [
+        {"id": "25", "name": "AI硬件", "ratio": 5.6915},
+        {"id": "164", "name": "核电", "ratio": 1.8424},
+        {"id": "84", "name": "人形机器人", "ratio": -2.4469},
+        {"id": "213", "name": "预制菜", "ratio": -4.739},
+        {"id": "189", "name": "商业航天", "ratio": 0.193},
+    ]}
+
+    def _fetcher(self, payload=None, valid=True):
+        c = MagicMock()
+        c.is_credential_valid.return_value = valid
+        c.get.return_value = payload if payload is not None else self.ROWS
+        return KplFetcher(client=c)
+
+    def test_uses_theme_list_endpoint(self) -> None:
+        f = self._fetcher()
+        f.get_concept_rankings(2)
+        called = f._client.get.call_args[0][0]
+        self.assertIn("theme-list", called)
+
+    def test_top_sorted_desc_by_change_pct(self) -> None:
+        top, _ = self._fetcher().get_concept_rankings(3)
+        self.assertEqual([r["name"] for r in top], ["AI硬件", "核电", "商业航天"])
+
+    def test_bottom_sorted_asc_by_change_pct(self) -> None:
+        _, bottom = self._fetcher().get_concept_rankings(3)
+        self.assertEqual([r["name"] for r in bottom], ["预制菜", "人形机器人", "商业航天"])
+
+    def test_contract_keys_only(self) -> None:
+        top, bottom = self._fetcher().get_concept_rankings(2)
+        for row in top + bottom:
+            self.assertEqual(set(row.keys()), {"name", "change_pct"})
+
+    def test_placeholder_rows_with_null_fields_dropped(self) -> None:
+        """真实接口首条常是全字段为 null 的占位行，必须被过滤掉。"""
+        payload = {"configured": True, "items": [
+            {"id": None, "name": None, "ratio": None},
+            {"id": "1", "name": "有效题材", "ratio": 1.0},
+        ]}
+        top, _ = self._fetcher(payload).get_concept_rankings(5)
+        self.assertEqual([r["name"] for r in top], ["有效题材"])
+
+    def test_none_when_not_configured(self) -> None:
+        """Socket 签名未配置时接口返回 configured=false，判为不可用。"""
+        payload = {"configured": False, "items": []}
+        self.assertIsNone(self._fetcher(payload).get_concept_rankings(3))
+
+    def test_none_when_unavailable_or_empty(self) -> None:
+        self.assertIsNone(self._fetcher(valid=False).get_concept_rankings(3))
+        self.assertIsNone(self._fetcher({"configured": True, "items": []}).get_concept_rankings(3))
 
 class TestKplFetcherMarketStats(unittest.TestCase):
     """大盘统计 —— 成交额单位换算错了会让下游读数差 10000 倍。"""

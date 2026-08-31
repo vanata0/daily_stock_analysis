@@ -4117,7 +4117,9 @@ class SearchService:
         had_provider_success = False
         try:
             for provider in self._providers:
-                if not provider.is_available:
+                # KPL 这类 preference_only 源按股票代码取结构化数据，题材检索
+                # 不传 stock_code，被当通用引擎调用只会得到参数错误
+                if not provider.is_available or getattr(provider, "preference_only", False):
                     continue
                 search_kwargs: Dict[str, Any] = {}
                 if isinstance(provider, TavilySearchProvider):

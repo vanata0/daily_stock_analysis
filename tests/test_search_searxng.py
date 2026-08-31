@@ -442,7 +442,10 @@ class TestSearXNGSearchProvider(unittest.TestCase):
         self.assertTrue(any(provider.name == "SearXNG" for provider in service._providers))
 
     def test_search_service_does_not_add_public_searxng_provider_by_default(self):
-        service = SearchService()
+        # KPL 是否注册取决于本机 .env 的 KPL_ENABLED，注册后 is_available 恒为 True，
+        # 这条断言只关心「没给任何 key 时不该有可用搜索源」，固定按未启用 KPL 运行。
+        with patch.object(SearchService, "_build_kpl_provider", return_value=None):
+            service = SearchService()
 
         self.assertFalse(service.is_available)
         self.assertFalse(any(provider.name == "SearXNG" for provider in service._providers))

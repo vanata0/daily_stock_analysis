@@ -16,7 +16,12 @@ if "newspaper" not in sys.modules:
     mock_np.Config = MagicMock()
     sys.modules["newspaper"] = mock_np
 
-from src.search_service import SearchResponse, SearchResult, SearchService
+from src.search_service import (
+    BochaSearchProvider,
+    SearchResponse,
+    SearchResult,
+    SearchService,
+)
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -51,6 +56,15 @@ def _response(results) -> SearchResponse:
 
 
 class SearchNewsFreshnessTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        # 这些用例锁定的是通用搜索引擎的时效窗口与维度分配，不涉及 KPL。
+        # KplSearchProvider 是否注册取决于本机 .env 的 KPL_ENABLED，注册后它会
+        # 接管 announcements 维度，维度分配少一次通用引擎调用，断言随本地配置
+        # 时对时错。这里固定按「未启用 KPL」运行，与 CI 环境保持一致。
+        patcher = patch.object(SearchService, "_build_kpl_provider", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     """Tests for strategy window and strict published_date filtering."""
 
     def _create_service_with_mock_provider(
@@ -70,7 +84,13 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             return_value=response
             or _response([_result("default", datetime.now().date().isoformat())])
         )
-        service._providers[0].search = mock_search
+        # 按类型定位，不用 _providers[0]：注册顺序会随数据源增减而变（本地
+        # .env 打开 KPL_ENABLED 时 KplSearchProvider 就排在最前），按位置打桩
+        # 会桩到别的 provider 上，Bocha 反而发出真实请求。
+        bocha = next(
+            p for p in service._providers if isinstance(p, BochaSearchProvider)
+        )
+        bocha.search = mock_search
         return service, mock_search
 
     def test_effective_window_uses_profile_and_news_max_age(self) -> None:

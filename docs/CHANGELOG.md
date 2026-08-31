@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 题材新闻检索 `search_topic_news` 会把 KPL 这类 `preference_only` 资讯源当通用搜索引擎调用：该路径不传 `stock_code`，KPL 只能返回「仅支持 A 股 6 位代码」的参数错误。补上与其余三处 provider 遍历一致的 `preference_only` 守卫。
+- [测试] 修复搜索用例受本机 `.env` 的 `KPL_ENABLED` 影响：`test_search_news_freshness` 原按 `_providers[0]` 位置打桩，KPL 启用后排在最前会桩错对象导致 Bocha 发出真实请求；改为按类型定位 Bocha，并把 KPL 注册固定为关闭，与 CI 环境一致。`test_search_searxng` 的 `is_available` 断言同此处理。
 - [修复] KPL 个股资金流逐日回溯在上游整体故障时不再打满整个窗口：`get_capital_flow` 原本会把 `wanted*2 + _FLOW_LOOKBACK_SLACK` 天全部请求完（2026-08-18 一次自选股批量分析实测打出 252 个 `chouma-history` 请求、全部 502），既拖慢分析又给故障中的上游加压。现在连续 3 天取数失败即判定上游不可用并放弃剩余回溯，命中限流（429）则立即收手；单日偶发失败被成功日打断后重新计数，不影响正常取数。
 - [修复] Agent 模式下运行诊断误报 `news_context_missing`：AnalysisContextPack 在 Agent 启动前构建，只能看到预取的公告/东财新闻/本地情报池；Agent 运行中自己调用 `search_stock_news` / `search_comprehensive_intel` 取回的新闻晚于该时点，因此三路预取全空时（如 Tushare token 过期 + 东财新闻被汇总噪音过滤 + 本地情报池无记录），即使 LLM 实际读到了新闻，运行诊断仍显示「新闻缺失」。现在 Agent 结束后按 `news_result_count` 回填 news 块并重建运行诊断概览，计数与报告层的空新闻披露同源（均来自 `news_evidence` 累加器），检索零命中或渠道不可用时不回填。
 - [新功能] KPL 盘前/盘后竞价聚合上下文接入：`get_auction_context` 汇总前日盘后固定价格交易（15:05~15:30）与当日盘前集合竞价（09:15~09:25）的有效字段；前日盘后直接取 `/kline/stock-fenbi2` 历史分笔中的 15:05~15:29 切片（含 volume/amount），当日 15:30 后再叠加 `/market-stats/afterhours-auction-trend` 当日盘后，不再依赖本地快照。输出为聚合摘要而非原始逐条序列。三条分析链路均已接入：Agent 数据工具 `get_auction_context`、多 Agent 编排的 IntelAgent、单 Agent 系统提示第二阶段，以及非 Agent 路径的「竞价与盘后固定价格交易」prompt 表格（A 股专用，fail-open，无数据时不产生该表格）。

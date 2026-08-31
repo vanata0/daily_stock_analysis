@@ -20,6 +20,7 @@ _ENV_BEFORE_MAIN_IMPORT = dict(os.environ)
 import main
 from src.brokers.futu.portfolio import FutuPortfolioError
 from src.config import Config
+from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 
 _MAIN_IMPORT_ENV_ADDITIONS = frozenset(set(os.environ) - set(_ENV_BEFORE_MAIN_IMPORT))
 _MAIN_IMPORT_ENV_OVERRIDES = {
@@ -189,6 +190,40 @@ class MainScheduleModeTestCase(unittest.TestCase):
 
         self.assertEqual(filtered_codes, ["jp-stock", "kr-stock", "none-stock"])
         self.assertEqual(effective_region, "jp,kr")
+        self.assertFalse(should_skip_all)
+
+    def test_compute_trading_day_filter_filters_registered_indices_on_cn_holiday(self) -> None:
+        """Index codes whose ``get_market_for_stock`` returns None must still
+        participate in CN trading-day filtering via ``parse_analysis_target``
+        (INDEX -> market=cn). On a CN holiday the indices are dropped, a US
+        stock whose market is open stays, and a market-unknown non-index code
+        stays (fail-open unchanged)."""
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_enabled=False,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+
+        stock_codes = ["sh000016", "csi930955", "930955.CSI", "AAPL", "XYZ123"]
+
+        def fake_market(code: str):
+            return "us" if code == "AAPL" else None
+
+        with patch(
+            "src.core.trading_calendar.get_market_for_stock",
+            side_effect=fake_market,
+        ), patch("src.core.trading_calendar.get_open_markets_today", return_value={"us"}):
+            filtered_codes, effective_region, should_skip_all = main._compute_trading_day_filter(
+                config,
+                args,
+                stock_codes,
+            )
+
+        # 已登记指数按 market=cn 参与过滤，CN 休市时被剔除；AAPL 因 US 开市保留；
+        # 市场未知的非指数 code（XYZ123）继续 fail-open 保留。
+        self.assertEqual(filtered_codes, ["AAPL", "XYZ123"])
+        self.assertIsNone(effective_region)
         self.assertFalse(should_skip_all)
 
     def test_public_webui_bind_warns_when_auth_is_disabled(self) -> None:
@@ -415,6 +450,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.setup_logging"), \
              patch("main.run_full_analysis") as run_full_analysis, \
              patch("main.logger.warning") as warning_log, \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
              patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule):
             exit_code = main.main()
 
@@ -440,13 +476,93 @@ class MainScheduleModeTestCase(unittest.TestCase):
         with patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
              patch("main.run_full_analysis") as run_full_analysis:
             exit_code = main.main()
 
         self.assertEqual(exit_code, 0)
         run_full_analysis.assert_called_once()
         _, _, stock_codes = run_full_analysis.call_args.args
+        analysis_targets = run_full_analysis.call_args.kwargs.get("analysis_targets")
         self.assertEqual(stock_codes, ["005930.KS"])
+        self.assertEqual(len(analysis_targets), 1)
+        self.assertEqual(analysis_targets[0].asset_type, "stock")
+
+    def test_standalone_run_builds_structured_index_targets(self) -> None:
+        args = self._make_args(
+            stocks="sh000016,000300.CSI,930955.CSI,000016"
+        )
+        config = self._make_config(run_immediately=True)
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main.run_full_analysis") as run_full_analysis:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        _, _, stock_codes = run_full_analysis.call_args.args
+        analysis_targets = run_full_analysis.call_args.kwargs["analysis_targets"]
+        self.assertEqual(
+            stock_codes,
+            ["sh000016", "sh000300", "csi930955", "000016"],
+        )
+        self.assertEqual(
+            [target.asset_type for target in analysis_targets],
+            ["index", "index", "index", "stock"],
+        )
+        self.assertEqual(
+            [target.canonical_id for target in analysis_targets],
+            ["sh000016", "sh000300", "csi930955", "sz000016"],
+        )
+
+    def test_standalone_run_refreshes_index_cache_before_parsing_stocks(self) -> None:
+        """``main.main()`` must refresh the stock-index registry (best-effort)
+        BEFORE parsing ``--stocks`` so a first run with a stale local registry
+        resolves a newly-registered alias to an index target in the same run."""
+        args = self._make_args(stocks="930955.CSI")
+        config = self._make_config(run_immediately=True)
+        calls = []
+
+        def fake_refresh(cfg):
+            calls.append(("refresh", cfg))
+
+        def fake_run_full_analysis(cfg, a, stock_codes, **kwargs):
+            calls.append(("parse", stock_codes, kwargs.get("analysis_targets")))
+            return 0
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch(
+                 "main._refresh_stock_index_cache_for_analysis",
+                 side_effect=fake_refresh,
+             ), \
+             patch("main.run_full_analysis", side_effect=fake_run_full_analysis):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        # 刷新必须先于 --stocks 解析执行。
+        self.assertEqual(calls[0][0], "refresh")
+        self.assertEqual(calls[1][0], "parse")
+        self.assertEqual(calls[1][1], ["csi930955"])
+        self.assertEqual(calls[1][2][0].asset_type, ParseStatus.INDEX)
+        self.assertEqual(calls[1][2][0].canonical_id, "csi930955")
+
+    def test_standalone_run_returns_nonzero_when_startup_analysis_reports_failure(self) -> None:
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch.object(main, "_LAST_ANALYSIS_FAILURE_REASON", "no_report"), \
+             patch("main._run_analysis_with_runtime_scheduler_lock", return_value=False) as run_with_lock:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        run_with_lock.assert_called_once_with(config, args, None, None)
 
     def test_standalone_futu_portfolio_failure_returns_nonzero(self) -> None:
         args = self._make_args(portfolio="futu")
@@ -547,6 +663,35 @@ class MainScheduleModeTestCase(unittest.TestCase):
             scheduled_call,
             {"schedule_time": "18:00", "resolved_schedule_time": "09:30"},
         )
+        run_full_analysis.assert_called_once_with(runtime_config, args, None)
+
+    def test_schedule_mode_raises_task_failure_when_analysis_returns_false(self) -> None:
+        args = self._make_args(schedule=True)
+        runtime_config = self._make_config(schedule_enabled=True, schedule_time="09:30")
+        scheduled_call = {}
+
+        def fake_run_with_schedule(
+            task,
+            schedule_time,
+            run_immediately,
+            background_tasks=None,
+            schedule_time_provider=None,
+        ):
+            scheduled_call["task"] = task
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=self._make_config(schedule_enabled=True, schedule_time="18:00")), \
+             patch("main._reload_runtime_config", return_value=runtime_config), \
+             patch("main._build_schedule_time_provider", return_value=lambda: "09:30"), \
+             patch("main.setup_logging"), \
+             patch("main.run_full_analysis", return_value=False) as run_full_analysis, \
+             patch.object(main, "_LAST_ANALYSIS_FAILURE_REASON", "no_report"), \
+             patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule):
+            exit_code = main.main()
+            with self.assertRaisesRegex(RuntimeError, "scheduled analysis reported failure: no_report"):
+                scheduled_call["task"]()
+
+        self.assertEqual(exit_code, 0)
         run_full_analysis.assert_called_once_with(runtime_config, args, None)
 
     def test_schedule_mode_registers_event_monitor_background_task(self) -> None:
@@ -719,7 +864,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         start_bots.assert_not_called()
-        run_with_lock.assert_called_once_with(config, args, None)
+        run_with_lock.assert_called_once_with(config, args, None, None)
         run_full_analysis.assert_not_called()
         error_log.assert_called_once()
 
@@ -845,7 +990,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(run_with_lock.call_count, 1)
-        run_with_lock.assert_called_once_with(config, args, None)
+        run_with_lock.assert_called_once_with(config, args, None, None)
         run_full_analysis.assert_not_called()
         start_bots.assert_called_once_with(config)
 
@@ -877,7 +1022,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             exit_code = main.main()
 
         self.assertEqual(exit_code, 0)
-        run_with_lock.assert_called_once_with(config, args, None)
+        run_with_lock.assert_called_once_with(config, args, None, None)
         start_bots.assert_called_once_with(config)
         exception_log.assert_any_call(
             "Futu 持仓导入失败，Web/API 服务继续运行: %s",
@@ -973,7 +1118,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(run_immediately_seen_by_server, ["false"])
         run_with_schedule.assert_not_called()
 
-    def test_serve_only_suppresses_startup_scheduler_without_disabling_runtime_owner(self) -> None:
+    def test_serve_only_restores_persisted_scheduler_without_running_immediately(self) -> None:
         from src.services.runtime_scheduler import (
             CLI_SCHEDULER_OWNER_ENV,
             RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV,
@@ -1007,8 +1152,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(marker_seen_by_server, [None])
-        self.assertEqual(suppress_seen_by_server, ["true"])
-        self.assertEqual(run_immediately_seen_by_server, [None])
+        self.assertEqual(suppress_seen_by_server, [None])
+        self.assertEqual(run_immediately_seen_by_server, ["false"])
         start_bots.assert_called_once_with(config)
         run_with_schedule.assert_not_called()
 
@@ -1177,11 +1322,18 @@ class MainScheduleModeTestCase(unittest.TestCase):
         with patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
              patch("main.run_full_analysis") as run_full_analysis:
             exit_code = main.main()
 
         self.assertEqual(exit_code, 0)
-        run_full_analysis.assert_called_once_with(config, args, ["600519", "000001"])
+        run_full_analysis.assert_called_once()
+        _, _, stock_codes = run_full_analysis.call_args.args
+        analysis_targets = run_full_analysis.call_args.kwargs.get("analysis_targets")
+        self.assertEqual(stock_codes, ["600519", "000001"])
+        self.assertEqual(len(analysis_targets), 2)
+        self.assertEqual(analysis_targets[0].asset_type, "stock")
+        self.assertEqual(analysis_targets[1].asset_type, "stock")
 
     def test_run_full_analysis_skips_market_review_when_shared_lock_is_held(self) -> None:
         from src.core.market_review_lock import (
@@ -1935,6 +2087,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             send_notification=True,
             merge_notification=True,
             current_time=unittest.mock.ANY,
+            analysis_targets=None,
         )
         notifier_message = pipeline.notifier.send.call_args.args[0]
         self.assertIn("## 完整大盘复盘", notifier_message)
@@ -2044,6 +2197,43 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertIs(call_args.args[1], run_market_review)
         self.assertEqual(call_args.kwargs["trigger_source"], "schedule")
 
+    def test_run_full_analysis_keeps_targets_aligned_after_trading_day_filter(self) -> None:
+        args = self._make_args(dry_run=True, no_market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_enabled=False,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = []
+        targets = [
+            parse_analysis_target("sh000016"),
+            parse_analysis_target("AAPL"),
+        ]
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch.object(
+                 main,
+                 "_compute_trading_day_filter",
+                 return_value=(["AAPL"], "us", False),
+             ), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch("src.core.market_review.run_market_review"):
+            main.run_full_analysis(
+                config,
+                args,
+                ["sh000016", "AAPL"],
+                analysis_targets=targets,
+            )
+
+        run_kwargs = pipeline.run.call_args.kwargs
+        self.assertEqual(run_kwargs["stock_codes"], ["AAPL"])
+        self.assertEqual(run_kwargs["analysis_targets"], [targets[1]])
+
     def test_market_review_mode_uses_shared_runtime_assembly(self) -> None:
         args = self._make_args(market_review=True)
         config = self._make_config(
@@ -2086,6 +2276,31 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertNotIn("merge_notification", call_args.kwargs)
         self.assertEqual(call_args.kwargs["override_region"], "cn,us")
         self.assertEqual(call_args.kwargs["trigger_source"], "cli")
+
+    def test_market_review_mode_returns_nonzero_when_no_report_is_generated(self) -> None:
+        args = self._make_args(market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_region="both",
+            market_review_enabled=False,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch(
+                 "src.core.market_review_runtime.build_market_review_runtime",
+                 return_value=(MagicMock(), MagicMock(), MagicMock()),
+             ), \
+             patch("main._run_market_review_with_shared_lock", return_value=None) as run_with_lock, \
+             patch("src.core.market_review.run_market_review"), \
+             patch("src.core.trading_calendar.get_open_markets_today", return_value={"cn", "us"}), \
+             patch("src.core.trading_calendar.compute_effective_region", return_value="cn,us"):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        run_with_lock.assert_called_once()
 
     def test_market_review_mode_respects_comma_list_market_review_region(self) -> None:
         args = self._make_args(market_review=True)

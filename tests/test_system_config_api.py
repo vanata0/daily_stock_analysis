@@ -111,6 +111,8 @@ class SystemConfigApiTestCase(unittest.TestCase):
     def test_get_config_keeps_regular_secret_value_unmasked(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
         item_map = {item["key"]: item for item in payload["items"]}
+        self.assertIn("openai", payload["llm_model_providers"])
+        self.assertIn("xai", payload["llm_model_providers"])
         self.assertEqual(item_map["GEMINI_API_KEY"]["value"], "secret-key-value")
         self.assertFalse(item_map["GEMINI_API_KEY"]["is_masked"])
 
@@ -844,6 +846,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                 "retryable": False,
                 "details": {},
                 "resolved_protocol": "openai",
+                "resolved_api_surface": "responses",
                 "resolved_model": "openai/gpt-4o-mini",
                 "latency_ms": 123,
             },
@@ -852,6 +855,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                 request=TestLLMChannelRequest(
                     name="primary",
                     protocol="openai",
+                    api_surface="responses",
                     base_url="https://api.example.com/v1",
                     api_key="sk-test",
                     models=["gpt-4o-mini"],
@@ -862,10 +866,12 @@ class SystemConfigApiTestCase(unittest.TestCase):
 
         self.assertTrue(payload["success"])
         self.assertEqual(payload["resolved_model"], "openai/gpt-4o-mini")
+        self.assertEqual(payload["resolved_api_surface"], "responses")
         self.assertEqual(payload["stage"], "chat_completion")
         self.assertEqual(payload["capability_results"], {})
         mock_test.assert_called_once()
         self.assertEqual(mock_test.call_args.kwargs["capability_checks"], ["json", "stream"])
+        self.assertEqual(mock_test.call_args.kwargs["api_surface"], "responses")
 
     def test_test_notification_channel_endpoint_returns_service_payload(self) -> None:
         with patch.object(

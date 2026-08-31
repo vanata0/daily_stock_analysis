@@ -3,6 +3,8 @@
  * Aligned with the API schema.
  */
 
+import type { ResearchArtifact } from './researchArtifact';
+
 // ============ Request Types ============
 
 export type StockReportType = 'simple' | 'detailed' | 'full' | 'brief';
@@ -356,6 +358,7 @@ export interface AnalysisContextPackOverview {
 /** Details section */
 export interface ReportDetails {
   newsContent?: string;
+  emptyNewsDisclosure?: string;
   rawResult?: Record<string, unknown>;
   contextSnapshot?: Record<string, unknown> & { marketReviewPayload?: MarketReviewPayload };
   analysisContextPackOverview?: AnalysisContextPackOverview | null;
@@ -373,6 +376,7 @@ export interface AnalysisReport {
   summary: ReportSummary;
   strategy?: ReportStrategy;
   details?: ReportDetails;
+  structuredReport?: ResearchArtifact | null;
 }
 
 // ============ Analysis Result Types ============

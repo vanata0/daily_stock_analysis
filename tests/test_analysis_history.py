@@ -52,6 +52,95 @@ from src.services.history_service import HistoryService
 import src.auth as auth
 
 
+class TestHistoryCsiCandidateConvergence(unittest.TestCase):
+    """PR #2267 review remediation: registered CSI explicit identities must
+    converge in history filter candidates so a record saved under any
+    equivalent form is reachable from every equivalent query input."""
+
+    def test_registered_csi_forms_include_canonical_uppercase_and_aliases(self):
+        """A registered CSI identity is a *persisted-read* filter path: the
+        candidate set must include the parser canonical (``csi930955``), the
+        old resolver's uppercase canonical (``CSI930955`` — how pre-fix records
+        were saved) and the IndexEntry's explicit aliases (``930955.CSI``) so a
+        record stored under any of them is hit by any equivalent input."""
+        for code in ("csi930955", "930955.CSI", "CSI930955", "  csi930955  "):
+            candidates = HistoryService._history_code_filter_candidates(code)
+            self.assertEqual(
+                set(candidates),
+                {"csi930955", "CSI930955", "930955.CSI"},
+            )
+            self.assertEqual(len(candidates), len(set(candidates)))
+
+    def test_bare_csi_base_remains_stock_candidates(self):
+        candidates = HistoryService._history_code_filter_candidates("930955")
+        self.assertIn("930955", candidates)
+        self.assertNotIn("csi930955", candidates)
+
+    def test_unregistered_csi_form_is_not_converged(self):
+        candidates = HistoryService._history_code_filter_candidates("csi930956")
+        self.assertNotIn("csi930956", candidates)
+
+    def test_market_aware_offshore_lookup_keeps_same_market_bare_numeric_alias(self):
+        db = MagicMock()
+        db.get_analysis_history_paginated.return_value = ([], 0)
+
+        HistoryService(db).get_history_list(
+            stock_code="005930.KS",
+            page=1,
+            limit=5,
+            include_ambiguous_numeric_aliases=False,
+            market_hint="kr",
+        )
+
+        queried_codes = db.get_analysis_history_paginated.call_args.kwargs["code"]
+        self.assertIn("005930.KS", queried_codes)
+        self.assertIn("005930", queried_codes)
+
+    def test_market_hint_blocks_indexed_cross_market_reexpansion(self):
+        db = MagicMock()
+        db.get_analysis_history_paginated.return_value = ([], 0)
+
+        HistoryService(db).get_history_list(
+            stock_code="000660",
+            page=1,
+            limit=5,
+            market_hint="cn",
+        )
+
+        queried_codes = db.get_analysis_history_paginated.call_args.kwargs["code"]
+        self.assertIn("SZ000660", queried_codes)
+        self.assertIn("000660.SZ", queried_codes)
+        self.assertNotIn("000660", queried_codes)
+        self.assertNotIn("000660.KS", queried_codes)
+
+    def test_market_hint_keeps_unambiguous_same_market_bare_numeric_alias(self):
+        db = MagicMock()
+        db.get_analysis_history_paginated.return_value = ([], 0)
+
+        HistoryService(db).get_history_list(
+            stock_code="600519",
+            page=1,
+            limit=5,
+            market_hint="cn",
+        )
+
+        queried_codes = db.get_analysis_history_paginated.call_args.kwargs["code"]
+        self.assertIn("600519", queried_codes)
+
+    def test_empty_market_qualified_candidate_set_fails_closed(self):
+        db = MagicMock()
+
+        result = HistoryService(db).get_history_list(
+            stock_code="AAPL",
+            page=1,
+            limit=5,
+            market_hint="cn",
+        )
+
+        self.assertEqual(result, {"total": 0, "items": []})
+        db.get_analysis_history_paginated.assert_not_called()
+
+
 def _analysis_context_pack_overview() -> dict:
     return {
         "pack_version": "1.0",
@@ -1947,10 +2036,40 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         report = get_history_detail(str(record_id), db_manager=self.db)
 
         self.assertEqual(report.meta.report_type, "market_review")
-        self.assertEqual(report.summary.analysis_summary, report_content)
+        self.assertEqual(report.summary.analysis_summary, "今日大盘复盘")
         self.assertIsNone(report.summary.action)
         self.assertIsNone(report.summary.action_label)
         self.assertEqual(report.details.news_content, report_content)
+
+    def test_market_review_summary_falls_back_to_sanitized_excerpt(self) -> None:
+        service = HistoryService(self.db)
+        markdown = (
+            "[dsa-market-region]: # (cn)\n\n"
+            "# 🎯 大盘复盘\n\n"
+            "## 今日观点\n\n"
+            "**成交活跃**，关注 [科技板块](https://example.com)。\n\n"
+            "| 指标 | 数值 |\n| --- | --- |\n| 涨跌 | +1% |\n\n"
+            "```json\n{\"internal\": true}\n```"
+        )
+
+        summary = service._market_review_summary("  ", markdown)
+
+        self.assertEqual(summary, "🎯 大盘复盘 今日观点 成交活跃，关注 科技板块。 指标 数值 涨跌 +1%")
+        self.assertNotIn("dsa-market-region", summary)
+        self.assertNotIn("internal", summary)
+
+    def test_market_review_summary_prefers_persisted_summary_and_truncates_fallback(self) -> None:
+        service = HistoryService(self.db)
+
+        self.assertEqual(
+            service._market_review_summary(" 已保存的短摘要 ", "# 不应使用"),
+            "已保存的短摘要",
+        )
+        self.assertEqual(
+            service._market_review_summary(None, "# " + "复" * 130),
+            "复" * 120 + "…",
+        )
+        self.assertIsNone(service._market_review_summary(None, "[dsa-market-region]: # (cn)"))
 
     def test_history_detail_localizes_english_summary_fields(self) -> None:
         """History detail should localize summary enums for English reports."""
@@ -2319,6 +2438,95 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         with self.db.get_session() as session:
             self.assertIsNone(session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id_1).first())
             self.assertIsNotNone(session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id_2).first())
+
+    def test_empty_news_state_round_trips_through_history_markdown(self) -> None:
+        """持久化、重建和历史 Markdown 必须保留三态披露。"""
+        no_channel = "⚠️ 未配置搜索渠道，本次分析未纳入新闻面证据。"
+        zero_hit = "⚠️ 本次未获取到可用的新闻面数据，以下结论未纳入新闻维度证据。"
+        service = HistoryService(self.db)
+
+        for suffix, count, expected in (
+            ("none", None, no_channel),
+            ("zero", 0, zero_hit),
+            ("hits", 3, None),
+        ):
+            with self.subTest(state=suffix):
+                result = self._build_result()
+                result.news_result_count = count
+                result.news_summary = ""
+                query_id = f"query_empty_news_round_trip_{suffix}"
+                record_id = self.db.save_analysis_history(
+                    result=result,
+                    query_id=query_id,
+                    report_type="full",
+                    news_content=None,
+                    context_snapshot=None,
+                    save_snapshot=False,
+                )
+                self.assertGreater(record_id, 0)
+
+                with self.db.get_session() as session:
+                    row = session.query(AnalysisHistory).filter(
+                        AnalysisHistory.id == record_id
+                    ).first()
+                    if row is None:
+                        self.fail("未找到保存的历史记录")
+                    raw_result = json.loads(row.raw_result or "{}")
+                    self.assertIn("news_result_count", raw_result)
+                    self.assertEqual(raw_result["news_result_count"], count)
+                    self.assertIs(raw_result["news_result_count_known"], True)
+                    rebuilt = service._rebuild_analysis_result(raw_result, row)
+
+                self.assertIsNotNone(rebuilt)
+                self.assertEqual(rebuilt.news_result_count, count)
+                self.assertTrue(rebuilt.news_result_count_known)
+                markdown = service.get_markdown_report(str(record_id))
+                self.assertIsNotNone(markdown)
+                if expected is None:
+                    self.assertNotIn(no_channel, markdown)
+                    self.assertNotIn(zero_hit, markdown)
+                else:
+                    self.assertIn(expected, markdown)
+
+                if get_history_detail is not None:
+                    report = get_history_detail(str(record_id), db_manager=self.db)
+                    self.assertEqual(report.details.empty_news_disclosure, expected)
+
+    def test_legacy_history_without_news_count_stays_silent(self) -> None:
+        """旧记录缺少计数字段时状态未知，不能倒推为未配置渠道。"""
+        no_channel = "⚠️ 未配置搜索渠道，本次分析未纳入新闻面证据。"
+        zero_hit = "⚠️ 本次未获取到可用的新闻面数据，以下结论未纳入新闻维度证据。"
+        record_id = self.db.save_analysis_history(
+            result=self._build_result(),
+            query_id="query_legacy_empty_news_unknown",
+            report_type="full",
+            news_content=None,
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertGreater(record_id, 0)
+
+        with self.db.session_scope() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            raw_result = json.loads(row.raw_result or "{}")
+            raw_result.pop("news_result_count", None)
+            raw_result.pop("news_result_count_known", None)
+            row.raw_result = json.dumps(raw_result, ensure_ascii=False)
+
+        record = self.db.get_analysis_history_by_id(record_id)
+        self.assertIsNotNone(record)
+        rebuilt = HistoryService(self.db)._rebuild_analysis_result(raw_result, record)
+        self.assertIsNotNone(rebuilt)
+        self.assertFalse(rebuilt.news_result_count_known)
+
+        markdown = HistoryService(self.db).get_markdown_report(str(record_id))
+        self.assertNotIn(no_channel, markdown or "")
+        self.assertNotIn(zero_hit, markdown or "")
+        if get_history_detail is not None:
+            report = get_history_detail(str(record_id), db_manager=self.db)
+            self.assertIsNone(report.details.empty_news_disclosure)
 
 
 class HistoryItemSchemaNegativeSentimentTest(unittest.TestCase):

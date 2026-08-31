@@ -206,7 +206,7 @@ const ChatPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [input, setInput] = useState('');
   const [skills, setSkills] = useState<SkillInfo[]>([]);
-  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
+  const [defaultSkillIds, setDefaultSkillIds] = useState<string[]>([]);
   const [showSkillDesc, setShowSkillDesc] = useState<string | null>(null);
   const [mobileSkillPickerOpen, setMobileSkillPickerOpen] = useState(false);
   const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
@@ -342,6 +342,7 @@ const ChatPage: React.FC = () => {
 
   const {
     messages,
+    selectedSkillIds: sessionSelectedSkillIds,
     loading,
     progressSteps,
     sessionId,
@@ -351,6 +352,7 @@ const ChatPage: React.FC = () => {
     stopping,
     terminalStatus,
     stopError,
+    setSelectedSkillIds,
     loadSessions,
     loadInitialSession,
     switchSession,
@@ -358,6 +360,7 @@ const ChatPage: React.FC = () => {
     startStream,
     clearCompletionBadge,
   } = useAgentChatStore();
+  const selectedSkillIds = sessionSelectedSkillIds ?? defaultSkillIds;
 
   useEffect(() => {
     if (activeStockContext || messages.length === 0) {
@@ -441,7 +444,7 @@ const ChatPage: React.FC = () => {
           res.default_skill_id ||
           res.skills[0]?.id ||
           '';
-        setSelectedSkillIds(defaultId ? [defaultId] : []);
+        setDefaultSkillIds(defaultId ? [defaultId] : []);
       })
       .catch((error) => {
         console.error('Failed to load chat skills:', error);
@@ -582,16 +585,14 @@ const ChatPage: React.FC = () => {
   }, []);
 
   const toggleSkillSelection = useCallback((skillId: string) => {
-    setSelectedSkillIds((prev) => {
-      if (prev.includes(skillId)) {
-        return prev.filter((id) => id !== skillId);
-      }
-      if (prev.length >= MAX_SELECTED_SKILLS) {
-        return prev;
-      }
-      return [...prev, skillId];
-    });
-  }, []);
+    if (selectedSkillIds.includes(skillId)) {
+      setSelectedSkillIds(selectedSkillIds.filter((id) => id !== skillId));
+      return;
+    }
+    if (selectedSkillIds.length < MAX_SELECTED_SKILLS) {
+      setSelectedSkillIds([...selectedSkillIds, skillId]);
+    }
+  }, [selectedSkillIds, setSelectedSkillIds]);
 
   const handleStartNewChat = useCallback(() => {
     followUpContextRef.current = null;
@@ -683,7 +684,10 @@ const ChatPage: React.FC = () => {
       if (overrideMessage !== undefined) {
         setInput(msgText);
       }
-      const usedSkillIds = normalizeSelectedSkillIds(overrideSkillIds ?? selectedSkillIds);
+      const requestedSkillIds = overrideSkillIds ?? sessionSelectedSkillIds;
+      const usedSkillIds = normalizeSelectedSkillIds(
+        requestedSkillIds ?? selectedSkillIds,
+      );
       const usedSkillNames = usedSkillIds.length > 0 ? getSkillNames(usedSkillIds) : ['通用'];
       const codexStockContext = agentStatus?.backend === 'codex_app_server'
         ? overrideStockContext
@@ -715,7 +719,9 @@ const ChatPage: React.FC = () => {
       const payload = {
         message: msgText,
         session_id: sessionId,
-        ...(usedSkillIds.length > 0 ? { skills: usedSkillIds } : {}),
+        ...(requestedSkillIds !== null
+          ? { skills: normalizeSelectedSkillIds(requestedSkillIds) }
+          : {}),
         context: contextForSend ?? undefined,
       };
       await startStream(payload, {
@@ -735,7 +741,7 @@ const ChatPage: React.FC = () => {
         },
       });
     },
-    [activeStockContext, agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, startStream, stockIndex],
+    [activeStockContext, agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, stockIndex],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

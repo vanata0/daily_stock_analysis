@@ -157,26 +157,14 @@ def _supports_explicit_keyword(callable_obj: Any, keyword: str) -> bool:
 _SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD = threading.Lock()
 _DAILY_MARKET_CONTEXT_SERVICE_LOCK_INIT_GUARD = threading.Lock()
 
-# Agent 自行检索新闻的工具；这些工具的返回值会作为 tool message 回到 LLM 上下文
-_AGENT_NEWS_TOOLS = ("search_stock_news", "search_comprehensive_intel")
+# 回填 AnalysisContextPack news 块时写入的说明文本。条数取自 news_evidence
+# 累加器（Agent 搜索工具的真实返回），不数工具调用次数：调用成功但零命中同样
+# 是「没有新闻证据」，按次数判定会把它误标成已获取。
 _AGENT_NEWS_CONTEXT_TEXT = {
-    "zh": "本次分析由 Agent 在运行中通过新闻检索工具（{tools}）实时获取，共 {count} 次成功调用，检索结果已进入本次 LLM 上下文。",
-    "en": "News was fetched by the agent at runtime via search tools ({tools}); {count} successful call(s), results entered this LLM run.",
-    "ko": "뉴스는 에이전트가 실행 중 검색 도구({tools})로 실시간 수집했으며, 성공 호출 {count}회의 결과가 이번 LLM 분석에 포함되었습니다.",
+    "zh": "本次分析由 Agent 在运行中通过新闻检索工具实时获取，共 {count} 条结果已进入本次 LLM 上下文。",
+    "en": "News was fetched by the agent at runtime via its search tools; {count} result(s) entered this LLM run.",
+    "ko": "뉴스는 에이전트가 실행 중 검색 도구로 실시간 수집했으며, {count}건의 결과가 이번 LLM 분석에 포함되었습니다.",
 }
-
-
-def _agent_news_tool_calls(tool_calls_log: Any) -> List[str]:
-    """Return names of successful agent news-search tool calls."""
-    if not isinstance(tool_calls_log, list):
-        return []
-    return [
-        str(entry.get("tool"))
-        for entry in tool_calls_log
-        if isinstance(entry, dict)
-        and entry.get("tool") in _AGENT_NEWS_TOOLS
-        and entry.get("success")
-    ]
 
 
 def _symbol_scope_lookup_values(code: str, market: str) -> List[str]:
@@ -1846,43 +1834,41 @@ class StockAnalysisPipeline:
             if result:
                 result.query_id = query_id
 
-            # Agent 在运行中自行检索的新闻晚于 pack 构建时点，若不回填会误报
-            # news_context_missing（结论其实已使用新闻）
-            if not str(initial_context.get("news_context") or "").strip():
-                _news_calls = _agent_news_tool_calls(
-                    getattr(agent_result, "tool_calls_log", None)
+            # Agent 在运行中自行检索的新闻晚于 pack 构建时点，不回填会误报
+            # news_context_missing（结论其实已使用新闻）。计数复用报告层同一个
+            # news_result_count，让运行诊断与报告披露对同一次分析给出一致结论：
+            # None（渠道不可用，未执行检索）与 0（执行了但零命中）都不回填，
+            # 两种情况下确实没有新闻证据进入本次分析。
+            _news_count = getattr(result, "news_result_count", None) if result else None
+            if _news_count and not str(initial_context.get("news_context") or "").strip():
+                _template = _AGENT_NEWS_CONTEXT_TEXT.get(
+                    report_language, _AGENT_NEWS_CONTEXT_TEXT["zh"]
                 )
-                if _news_calls:
-                    _template = _AGENT_NEWS_CONTEXT_TEXT.get(
-                        report_language, _AGENT_NEWS_CONTEXT_TEXT["zh"]
-                    )
-                    _, _rebuilt_overview = self._build_analysis_context_pack_outputs(
-                        self._build_agent_analysis_artifacts(
-                            code=code,
-                            stock_name=stock_name,
-                            market=market,
-                            phase=market_phase_context,
-                            initial_context=initial_context,
-                            fundamental_context=fundamental_context,
-                            query_id=query_id,
-                            base_context=analysis_context,
-                            portfolio_context=portfolio_context,
-                            news_context_override=_template.format(
-                                tools=", ".join(sorted(set(_news_calls))),
-                                count=len(_news_calls),
-                            ),
-                        ),
-                        report_language=report_language,
+                _, _rebuilt_overview = self._build_analysis_context_pack_outputs(
+                    self._build_agent_analysis_artifacts(
                         code=code,
+                        stock_name=stock_name,
+                        market=market,
+                        phase=market_phase_context,
+                        initial_context=initial_context,
+                        fundamental_context=fundamental_context,
                         query_id=query_id,
+                        base_context=analysis_context,
+                        portfolio_context=portfolio_context,
+                        news_context_override=_template.format(count=_news_count),
+                        news_result_count=_news_count,
+                    ),
+                    report_language=report_language,
+                    code=code,
+                    query_id=query_id,
+                )
+                if _rebuilt_overview:
+                    analysis_context_pack_overview = _rebuilt_overview
+                    logger.info(
+                        "[%s] Agent mode: news block backfilled with %d result(s)",
+                        code,
+                        _news_count,
                     )
-                    if _rebuilt_overview:
-                        analysis_context_pack_overview = _rebuilt_overview
-                        logger.info(
-                            "[%s] Agent mode: news block backfilled from %d tool call(s)",
-                            code,
-                            len(_news_calls),
-                        )
 
             # Agent weak integrity: placeholder fill only, no LLM retry
             if result and getattr(self.config, "report_integrity_enabled", False):

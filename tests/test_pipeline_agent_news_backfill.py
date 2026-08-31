@@ -12,28 +12,18 @@ from tests.litellm_stub import ensure_litellm_stub
 
 ensure_litellm_stub()
 
-from src.core.pipeline import StockAnalysisPipeline, _agent_news_tool_calls
+from src.core.pipeline import StockAnalysisPipeline, _AGENT_NEWS_CONTEXT_TEXT
 from src.services.analysis_context_builder import AnalysisContextBuilder
 from src.schemas.analysis_context_pack import ContextFieldStatus
 
 
-class AgentNewsToolCallsTest(unittest.TestCase):
-    def test_only_successful_news_tools_are_counted(self):
-        log = [
-            {"tool": "get_realtime_quote", "success": True},
-            {"tool": "search_stock_news", "success": True},
-            {"tool": "search_comprehensive_intel", "success": True},
-            {"tool": "search_stock_news", "success": False},
-            {"tool": "analyze_trend", "success": True},
-            "not-a-dict",
-        ]
-        self.assertEqual(
-            _agent_news_tool_calls(log),
-            ["search_stock_news", "search_comprehensive_intel"],
-        )
+class AgentNewsContextTextTest(unittest.TestCase):
+    """回填文案只吃 count 一个占位符，改文案时漏参数会在这里炸掉。"""
 
-    def test_non_list_log_is_tolerated(self):
-        self.assertEqual(_agent_news_tool_calls(None), [])
+    def test_every_language_formats_with_count_only(self):
+        for lang, template in _AGENT_NEWS_CONTEXT_TEXT.items():
+            with self.subTest(lang=lang):
+                self.assertIn("8", template.format(count=8))
 
 
 class AgentNewsBackfillTest(unittest.TestCase):

@@ -702,6 +702,8 @@ def _handle_get_capital_flow(stock_code: str) -> dict:
     return {
         "stock_code": stock_code,
         "status": status,
+        "main_buy": stock_flow.get("main_buy"),
+        "main_sell": stock_flow.get("main_sell"),
         "main_net_inflow": stock_flow.get("main_net_inflow"),
         "inflow_5d": stock_flow.get("inflow_5d"),
         "inflow_10d": stock_flow.get("inflow_10d"),
@@ -717,7 +719,8 @@ get_capital_flow_tool = ToolDefinition(
     name="get_capital_flow",
     description=(
         "Get main-force (主力) capital flow data for an A-share stock. "
-        "Returns today's net inflow, 5-day and 10-day cumulative inflows, "
+        "Returns today's main buy and sell amounts (main_sell is negative), "
+        "today's net inflow, 5-day and 10-day cumulative inflows, "
         "and top sector-level capital flow rankings. "
         "Only supported for A-share individual stocks (not ETFs, indices, HK, or US stocks)."
     ),
@@ -735,6 +738,70 @@ get_capital_flow_tool = ToolDefinition(
 
 
 ALL_DATA_TOOLS.append(get_capital_flow_tool)
+
+
+# ============================================================
+# get_auction_context
+# ============================================================
+
+def _handle_get_auction_context(stock_code: str) -> dict:
+    """Get aggregated KPL pre-market and after-hours auction context."""
+    manager = _get_fetcher_manager()
+    try:
+        fetcher = manager._get_fetcher_by_name("KplFetcher")
+        if fetcher is None or not callable(getattr(fetcher, "get_auction_context", None)):
+            return {
+                "stock_code": stock_code,
+                "status": "not_supported",
+                "note": "KPL auction context is only available when KPL is enabled.",
+            }
+        ctx = fetcher.get_auction_context(stock_code)
+    except Exception as exc:
+        logger.warning("get_auction_context failed for %s: %s", stock_code, exc)
+        return {
+            "stock_code": stock_code,
+            "status": "error",
+            "error": f"auction context fetch failed: {exc}",
+        }
+
+    if not ctx:
+        return {
+            "stock_code": stock_code,
+            "status": "no_data",
+            "note": "No valid pre-market or after-hours auction data returned.",
+        }
+
+    return {
+        "stock_code": stock_code,
+        "status": "ok",
+        "prev_afterhours": ctx.get("prev_afterhours") or {},
+        "today_premarket": ctx.get("today_premarket") or {},
+        "today_afterhours": ctx.get("today_afterhours") or {},
+    }
+
+
+get_auction_context_tool = ToolDefinition(
+    name="get_auction_context",
+    description=(
+        "Get aggregated KPL auction context for an A-share stock: "
+        "previous trading day after-hours fixed-price auction (15:05-15:30), "
+        "today's pre-market auction (09:15-09:25), and today's after-hours "
+        "auction after 15:30. Returns compact summaries, not raw ticks."
+    ),
+    parameters=[
+        ToolParameter(
+            name="stock_code",
+            type="string",
+            description="A-share stock code, e.g., '600519'",
+        ),
+    ],
+    handler=_handle_get_auction_context,
+    category="data",
+    policy=_MARKET_DATA_STOCK_POLICY,
+)
+
+
+ALL_DATA_TOOLS.append(get_auction_context_tool)
 
 
 # ============================================================

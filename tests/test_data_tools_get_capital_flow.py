@@ -21,6 +21,8 @@ class _DummyManagerOk:
             "status": "ok",
             "data": {
                 "stock_flow": {
+                    "main_buy": 2500000.0,
+                    "main_sell": -1000000.0,
                     "main_net_inflow": 1500000.0,
                     "inflow_5d": 8000000.0,
                     "inflow_10d": 15000000.0,
@@ -60,6 +62,8 @@ class TestGetCapitalFlowContract(unittest.TestCase):
 
         self.assertEqual(result["stock_code"], "600519")
         self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["main_buy"], 2500000.0)
+        self.assertEqual(result["main_sell"], -1000000.0)
         self.assertEqual(result["main_net_inflow"], 1500000.0)
         self.assertEqual(result["inflow_5d"], 8000000.0)
         self.assertEqual(result["inflow_10d"], 15000000.0)

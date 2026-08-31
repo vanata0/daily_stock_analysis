@@ -18,6 +18,7 @@
 import importlib.util
 import sys
 import unittest
+from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
 from tests.litellm_stub import ensure_litellm_stub
@@ -35,14 +36,22 @@ if not json_repair_available and "json_repair" not in sys.modules:
 from data_provider.kpl_fetcher import KplFetcher
 from data_provider.kpl_http import KplRequestError
 
-# 取自 000977 实测：main_sell 上游已是负值
+# 取自 000977 实测（2026-07-20~24）：main_sell 上游已是负值。
+# 日期必须相对今天生成：get_capital_flow() 从 date.today() 往前只回溯
+# wanted*2 + _FLOW_LOOKBACK_SLACK 天，写死绝对日期的话 fixture 会随时间漂出
+# 窗口，某天开始整组用例突然拿到 None（2026-09-01 实际发生过）。
+_DAILY_VALUES = [
+    (3_070_297_443, -3_205_910_638),
+    (5_949_966_930, -6_136_657_829),
+    (7_900_525_462, -7_947_982_527),
+    (6_933_213_185, -6_544_114_644),
+    (6_583_016_492, -6_079_754_787),
+]
 DAILY = {
-    "20260724": (3_070_297_443, -3_205_910_638),
-    "20260723": (5_949_966_930, -6_136_657_829),
-    "20260722": (7_900_525_462, -7_947_982_527),
-    "20260721": (6_933_213_185, -6_544_114_644),
-    "20260720": (6_583_016_492, -6_079_754_787),
+    (date.today() - timedelta(days=i)).strftime("%Y%m%d"): pair
+    for i, pair in enumerate(_DAILY_VALUES)
 }
+_THIRD_DAY = list(DAILY)[2]
 
 
 def _fetcher(daily=None, valid=True, fail_days=()):
@@ -73,13 +82,18 @@ class TestCapitalFlowEndpointChoice(unittest.TestCase):
         f = _fetcher()
         f.get_capital_flow("000977", days=3)
         paths = [c.args[0] for c in f._client.get.call_args_list]
-        self.assertTrue(all("chouma-history" in p for p in paths))
+        self.assertTrue(any("chouma-history" in p for p in paths))
+        self.assertTrue(any("stock-dp-realdata" in p for p in paths))
         self.assertFalse(any("main-monitor-trend" in p for p in paths))
 
     def test_queries_one_day_at_a_time(self) -> None:
         f = _fetcher()
         f.get_capital_flow("000977", days=5)
-        days = [c.kwargs.get("params", {}).get("day") for c in f._client.get.call_args_list]
+        days = [
+            c.kwargs.get("params", {}).get("day")
+            for c in f._client.get.call_args_list
+            if "chouma-history" in c.args[0]
+        ]
         self.assertEqual(len(days), len(set(days)), "同一天不应重复查询")
 
 
@@ -88,13 +102,22 @@ class TestCapitalFlowAggregation(unittest.TestCase):
         r = _fetcher().get_capital_flow("000977", days=5)
         self.assertEqual(
             set(r.keys()),
-            {"main_net_inflow", "inflow_5d", "inflow_10d", "trade_date"},
+            {
+                "main_buy",
+                "main_sell",
+                "main_net_inflow",
+                "inflow_5d",
+                "inflow_10d",
+                "trade_date",
+            },
         )
 
     def test_latest_day_net(self) -> None:
         """main_sell 上游已为负值，净额是直接相加而非相减。"""
         r = _fetcher().get_capital_flow("000977", days=5)
         self.assertEqual(r["main_net_inflow"], 3_070_297_443 - 3_205_910_638)
+        self.assertEqual(r["main_buy"], 3_070_297_443)
+        self.assertEqual(r["main_sell"], -3_205_910_638)
 
     def test_five_day_sum(self) -> None:
         r = _fetcher().get_capital_flow("000977", days=5)
@@ -117,7 +140,7 @@ class TestCapitalFlowAggregation(unittest.TestCase):
         self.assertIsNotNone(r["main_net_inflow"])
 
     def test_single_day_failure_does_not_abort(self) -> None:
-        r = _fetcher(fail_days={"20260722"}).get_capital_flow("000977", days=3)
+        r = _fetcher(fail_days={_THIRD_DAY}).get_capital_flow("000977", days=3)
         self.assertIsNotNone(r)
 
     def test_none_when_unavailable_or_empty(self) -> None:
@@ -127,6 +150,39 @@ class TestCapitalFlowAggregation(unittest.TestCase):
     def test_non_a_share_rejected(self) -> None:
         for bad in ("AAPL", "00700", ""):
             self.assertIsNone(_fetcher().get_capital_flow(bad))
+
+    def test_realtime_snapshot_feeds_latest_main_fields(self) -> None:
+        """当日主力买/卖/净应优先取 stock-dp-realdata 的实时快照。
+
+        603993 实测：stock-dp-realdata 为 963386536 / -1026058993 /
+        -62672457，而 chouma-history 的 20260813 收盘是另一组数值。
+        """
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+
+        def fake_get(path, params=None):
+            if path.startswith("/big-money/stock-dp-realdata/"):
+                return {
+                    "main_buy": 963_386_536.0,
+                    "main_sell": -1_026_058_993.0,
+                    "main_net": -62_672_457.0,
+                    "turnover": 2_924_987_147.0,
+                }
+            if path.startswith("/orderbook/"):
+                return {"trade_date": "20260814"}
+            day = (params or {}).get("day")
+            pair = DAILY.get(day)
+            if not pair:
+                return {"items": []}
+            return {"items": [{"main_buy": pair[0], "main_sell": pair[1]}]}
+
+        client.get.side_effect = fake_get
+        r = KplFetcher(client=client).get_capital_flow("603993", days=5)
+
+        self.assertEqual(r["main_buy"], 963_386_536.0)
+        self.assertEqual(r["main_sell"], -1_026_058_993.0)
+        self.assertEqual(r["main_net_inflow"], -62_672_457.0)
+        self.assertEqual(r["trade_date"], "20260814")
 
 
 class TestCapitalFlowSemantics(unittest.TestCase):
@@ -148,6 +204,8 @@ class TestCapitalFlowSemantics(unittest.TestCase):
         client.get.return_value = {"items": cumulative}
         r = KplFetcher(client=client).get_capital_flow("000977", days=1)
         self.assertEqual(r["main_net_inflow"], 3_000 - 1_200)
+        self.assertEqual(r["main_buy"], 3_000)
+        self.assertEqual(r["main_sell"], -1_200)
 
     def test_net_all_field_is_ignored(self) -> None:
         """上游 net_all 与 main_buy+main_sell 是两个不同口径，符号常相反。

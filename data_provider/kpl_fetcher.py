@@ -320,14 +320,16 @@ class KplFetcher(BaseFetcher):
     def get_capital_flow(
         self, stock_code: str, days: int = 10
     ) -> Optional[Dict[str, Any]]:
-        """获取个股主力资金流（当日 + 多日累计）。
+        """获取个股主力资金流（当日实时 + 多日累计）。
 
-        逐交易日调用 ``/big-money/chouma-history?day=`` 取当日主力买卖额。
+        当日主力买/卖/净优先取 ``/big-money/stock-dp-realdata`` 的实时快照；
+        多日累计逐交易日调用 ``/big-money/chouma-history?day=`` 取历史主力买卖额。
 
         端点选择依据（实测）：``/big-money/main-monitor-trend`` 虽然声明了
         ``date`` 参数，但传任何日期都返回同一份当日数据（4 种格式验证过），
         用它做多日累计会把同一天叠加 N 遍；``chouma-history`` 的 ``day``
-        真实生效，同标的不同日期返回不同数值。
+        真实生效，同标的不同日期返回不同数值。``stock-dp-realdata`` 只给
+        当日快照，不能替代 ``chouma-history`` 做多日累计。
 
         上游语义（2026-07-26 实测确认）：
           - ``items`` 是当日 09:30~15:00 每 5 分钟一条的**累计值**（49 条），
@@ -340,8 +342,9 @@ class KplFetcher(BaseFetcher):
           - 盘中调用拿到的是当时的运行累计值，不是全天终值。
 
         Returns:
-            {"main_net_inflow", "inflow_5d", "inflow_10d", "trade_date"}，
-            金额单位为元；无数据返回 None（由上层降级）
+            {"main_buy", "main_sell", "main_net_inflow",
+             "inflow_5d", "inflow_10d", "trade_date"}，金额单位为元；
+            无数据返回 None（由上层降级）
         """
         if not self.is_available():
             return None
@@ -351,14 +354,25 @@ class KplFetcher(BaseFetcher):
 
         wanted = max(1, min(days, _MAX_FLOW_DAYS))
         daily: List[float] = []
+        latest_buy: Optional[float] = None
+        latest_sell: Optional[float] = None
         latest_day: Optional[str] = None
-        cursor = date.today()
+        realtime = self._get_capital_flow_realtime(code)
+        if realtime is not None:
+            daily.append(realtime["main_net"])
+            latest_buy = realtime["main_buy"]
+            latest_sell = realtime["main_sell"]
+            latest_day = realtime["trade_date"]
+
+        cursor = date.today() - timedelta(days=1 if realtime is not None else 0)
         # 上游按自然日索引，非交易日返回空；这里往前多探一些日历日以凑够交易日
         for _ in range(wanted * 2 + _FLOW_LOOKBACK_SLACK):
             if len(daily) >= wanted:
                 break
             day_str = cursor.strftime("%Y%m%d")
             cursor -= timedelta(days=1)
+            if latest_day and day_str == latest_day:
+                continue
             try:
                 payload = self._client.get(
                     f"/big-money/chouma-history/{code}", params={"day": day_str}
@@ -390,12 +404,18 @@ class KplFetcher(BaseFetcher):
             daily.append((buy or 0.0) + (sell or 0.0))
             if latest_day is None:
                 latest_day = day_str
+                latest_buy = buy if buy is not None else 0.0
+                latest_sell = sell if sell is not None else 0.0
 
         if not daily:
             logger.debug("[KplFetcher] %s 无资金流数据", stock_code)
             return None
 
         result = {
+            "main_buy": latest_buy,
+            "main_sell": latest_sell,
+            # 净额只用 main_net_inflow 一个键：Mairui / AkShare 兜底路径也产这个键，
+            # 再加一个同值的 main_net 会在降级时变成「一个有值一个 None」的噪音
             "main_net_inflow": daily[0],
             "inflow_5d": sum(daily[:5]) if len(daily) >= 5 else None,
             "inflow_10d": sum(daily[:10]) if len(daily) >= 10 else None,
@@ -406,6 +426,316 @@ class KplFetcher(BaseFetcher):
             stock_code, result["main_net_inflow"], len(daily),
         )
         return result
+
+    def _get_capital_flow_realtime(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """获取 KPL 当日主力资金实时快照。
+
+        ``/big-money/stock-dp-realdata`` 的服务器键 ZLBuy/ZLSell/ZLJE 直接对应
+        main_buy/main_sell/main_net，算术关系已由 kpl-unified-client 逐位锁死。
+        该端点只返回当日快照，不能替代 chouma-history 做历史累计。
+        """
+        if not self.is_available():
+            return None
+        code = normalize_stock_code(stock_code)
+        if not code or not code.isdigit() or len(code) != 6:
+            return None
+
+        try:
+            data = self._client.get(f"/big-money/stock-dp-realdata/{code}")
+        except KplError as exc:
+            logger.debug("[KplFetcher] 当日资金流实时快照 %s 获取失败: %s", stock_code, exc)
+            return None
+
+        buy = _to_float(data.get("main_buy"))
+        sell = _to_float(data.get("main_sell"))
+        if buy is None and sell is None:
+            logger.debug("[KplFetcher] %s 当日资金流实时快照无有效买卖额", stock_code)
+            return None
+        if not buy and not sell and _to_float(data.get("turnover")):
+            logger.debug(
+                "[KplFetcher] %s 有成交但无主力资金覆盖，跳过实时快照",
+                stock_code,
+            )
+            return None
+
+        trade_date = None
+        try:
+            orderbook = self._client.get(f"/orderbook/{code}")
+            trade_date = str(orderbook.get("trade_date") or "").strip() or None
+        except KplError as exc:
+            logger.debug("[KplFetcher] 当日资金流实时快照读取交易日失败: %s", exc)
+
+        return {
+            "main_buy": buy if buy is not None else 0.0,
+            "main_sell": sell if sell is not None else 0.0,
+            "main_net": (buy or 0.0) + (sell or 0.0),
+            "trade_date": trade_date or date.today().strftime("%Y%m%d"),
+        }
+
+    def get_auction_context(
+        self,
+        stock_code: str,
+    ) -> Optional[Dict[str, Any]]:
+        """获取前日盘后、当日盘前与当日盘后的竞价聚合上下文。
+
+        前日盘后优先取 ``/kline/stock-fenbi2`` 的历史分笔记录（该接口虽然
+        不是专门的盘后接口，但实测包含 15:05~15:29 的盘后切片，且有
+        volume/amount）；当日 15:30 后另取
+        ``/market-stats/afterhours-auction-trend`` 作为当日盘后。盘前来自
+        ``/auction/stock-bid``，是当日 09:15~09:25 集合竞价序列的聚合摘要。
+        三者都以摘要返回，不把原始逐条数据直接交给 LLM。
+
+        Returns:
+            None 或 {"stock_code", "prev_afterhours", "today_premarket",
+            "today_afterhours"}；单个会话不可用时对应键为空 dict，不影响另一侧。
+        """
+        if not self.is_available():
+            return None
+        code = normalize_stock_code(stock_code)
+        if not code or not code.isdigit() or len(code) != 6:
+            return None
+
+        current_afterhours = self._get_afterhours_auction_summary(code)
+        prev_afterhours = self._get_historical_afterhours_auction_summary(code)
+        premarket = self._get_premarket_auction_summary(code)
+        today_str = date.today().strftime("%Y%m%d")
+        today_afterhours = None
+        if (
+            current_afterhours
+            and current_afterhours.get("session_date") == today_str
+            and self._is_afterhours_complete()
+        ):
+            today_afterhours = current_afterhours
+        elif current_afterhours and prev_afterhours is None:
+            prev_afterhours = current_afterhours
+
+        if not prev_afterhours and not premarket and not today_afterhours:
+            logger.debug("[KplFetcher] %s 无盘前/盘后有效数据", code)
+            return None
+
+        return {
+            "stock_code": code,
+            "prev_afterhours": prev_afterhours or {},
+            "today_premarket": premarket or {},
+            "today_afterhours": today_afterhours or {},
+        }
+
+    @staticmethod
+    def _is_afterhours_complete() -> bool:
+        now = datetime.now()
+        return (now.hour, now.minute) >= (15, 30)
+
+    def _get_historical_afterhours_auction_summary(
+        self,
+        code: str,
+    ) -> Optional[Dict[str, Any]]:
+        """从历史分笔接口回找最近一个含盘后 15:05~15:29 记录的交易会话。"""
+        cursor = date.today()
+        for _ in range(10):
+            day_str = cursor.strftime("%Y%m%d")
+            cursor -= timedelta(days=1)
+            try:
+                data = self._client.get(
+                    f"/kline/stock-fenbi2/{code}",
+                    params={"day": day_str},
+                )
+            except KplError as exc:
+                logger.debug("[KplFetcher] %s %s 历史分笔获取失败: %s", code, day_str, exc)
+                continue
+            items = data.get("items") if isinstance(data.get("items"), list) else []
+            afterhours = [
+                item
+                for item in items
+                if isinstance(item, dict)
+                and "15:05" <= str(item.get("time") or "") < "15:30"
+            ]
+            if not afterhours:
+                continue
+            return self._aggregate_fenbi_afterhours(day_str, afterhours)
+        logger.debug("[KplFetcher] %s 最近 10 个自然日无历史盘后分笔", code)
+        return None
+
+    @staticmethod
+    def _aggregate_fenbi_afterhours(
+        day_str: str,
+        items: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        total_volume_hand = 0.0
+        total_amount = 0.0
+        buy_volume_hand = 0.0
+        sell_volume_hand = 0.0
+        active_records = 0
+        last_price: Optional[float] = None
+        for item in items:
+            price = _to_float(item.get("price"))
+            if price is not None:
+                last_price = price
+            volume_hand = _to_float(item.get("volume_hand")) or 0.0
+            amount = _to_float(item.get("amount")) or 0.0
+            if volume_hand > 0:
+                active_records += 1
+                total_volume_hand += volume_hand
+                total_amount += amount
+            trade_side = _to_int(item.get("trade_side"))
+            if trade_side == 1:
+                buy_volume_hand += volume_hand
+            elif trade_side == 0:
+                sell_volume_hand += volume_hand
+        return {
+            "session_date": day_str,
+            "source": "stock_fenbi2",
+            "record_count": len(items),
+            "active_record_count": active_records,
+            "price": last_price,
+            "total_volume_hand": round(total_volume_hand, 2),
+            "total_amount": round(total_amount, 2),
+            "buy_volume_hand": round(buy_volume_hand, 2),
+            "sell_volume_hand": round(sell_volume_hand, 2),
+        }
+
+    def _get_afterhours_auction_summary(
+        self,
+        code: str,
+    ) -> Optional[Dict[str, Any]]:
+        """聚合 KPL 盘后固定价格交易 15:05~15:30 的有效数据。"""
+        try:
+            data = self._client.get(
+                "/market-stats/afterhours-auction-trend",
+                params={"stock_id": code},
+            )
+        except KplError as exc:
+            logger.debug("[KplFetcher] 盘后竞价 %s 获取失败: %s", code, exc)
+            return None
+
+        records = data.get("records") if isinstance(data.get("records"), list) else []
+        if not records:
+            logger.debug("[KplFetcher] %s 盘后竞价无记录", code)
+            return None
+
+        total_volume_hand = 0.0
+        total_amount = 0.0
+        active_records = 0
+        peak_buy_unmatched_hand = 0.0
+        peak_sell_unmatched_hand = 0.0
+        last_price: Optional[float] = None
+
+        def raw_float(raw: Any, key: str) -> Optional[float]:
+            if not isinstance(raw, dict):
+                return None
+            value = raw.get(key)
+            if value is None:
+                value = raw.get(int(key))
+            return _to_float(value)
+
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            raw = record.get("raw_fields")
+            price = _to_float(record.get("price"))
+            if price is not None:
+                last_price = price
+            volume_hand = raw_float(raw, "5")
+            if volume_hand is not None:
+                if volume_hand > 0:
+                    active_records += 1
+                    total_volume_hand += volume_hand
+                    if price is not None and price > 0:
+                        total_amount += volume_hand * price * 100
+            buy_unmatched = raw_float(raw, "3") or 0.0
+            sell_unmatched = raw_float(raw, "4") or 0.0
+            peak_buy_unmatched_hand = max(peak_buy_unmatched_hand, buy_unmatched)
+            peak_sell_unmatched_hand = max(peak_sell_unmatched_hand, sell_unmatched)
+
+        if active_records == 0 and peak_buy_unmatched_hand <= 0 and peak_sell_unmatched_hand <= 0:
+            logger.debug("[KplFetcher] %s 盘后竞价无有效成交或挂单", code)
+            return None
+
+        last = records[-1]
+        last_raw = last.get("raw_fields") if isinstance(last, dict) else None
+        return {
+            "session_date": str(data.get("date") or "").strip() or None,
+            "record_count": len(records),
+            "active_record_count": active_records,
+            "price": last_price,
+            "total_volume_hand": round(total_volume_hand, 2),
+            "total_amount": round(total_amount, 2),
+            "peak_buy_unmatched_hand": round(peak_buy_unmatched_hand, 2),
+            "peak_sell_unmatched_hand": round(peak_sell_unmatched_hand, 2),
+            "last_buy_unmatched_hand": round(raw_float(last_raw, "3") or 0.0, 2),
+            "last_sell_unmatched_hand": round(raw_float(last_raw, "4") or 0.0, 2),
+        }
+
+    def _get_premarket_auction_summary(
+        self,
+        code: str,
+    ) -> Optional[Dict[str, Any]]:
+        """聚合 KPL 当日 09:15~09:25 集合竞价序列的有效数据。"""
+        try:
+            data = self._client.get(f"/auction/stock-bid/{code}")
+        except KplError as exc:
+            logger.debug("[KplFetcher] 盘前竞价 %s 获取失败: %s", code, exc)
+            return None
+
+        bid = data.get("bid") if isinstance(data.get("bid"), list) else []
+        if not bid:
+            logger.debug("[KplFetcher] %s 盘前竞价无记录", code)
+            return None
+
+        preclose = _to_float(data.get("preclose"))
+        open_price = _to_float(data.get("open"))
+        first = bid[0] if isinstance(bid[0], dict) else {}
+        last = bid[-1] if isinstance(bid[-1], dict) else {}
+        first_price = _to_float(first.get("price"))
+        last_price = _to_float(last.get("price"))
+        last_volume_hand = _to_float(last.get("volume"))
+
+        volumes = [
+            _to_float(item.get("volume"))
+            for item in bid
+            if isinstance(item, dict)
+        ]
+        valid_volumes = [v for v in volumes if v is not None]
+        peak_volume_hand = max(valid_volumes) if valid_volumes else None
+        final_volume_hand = (
+            last_volume_hand
+            if last_volume_hand is not None
+            else peak_volume_hand
+        )
+        withdraw_volume_hand = (
+            max(0.0, peak_volume_hand - (final_volume_hand or 0.0))
+            if peak_volume_hand is not None and final_volume_hand is not None
+            else None
+        )
+
+        auction_price = last_price if last_price is not None else open_price
+        estimated_turnover_amount = None
+        if auction_price is not None and final_volume_hand is not None:
+            estimated_turnover_amount = final_volume_hand * auction_price * 100
+
+        bid_change_pct = None
+        if preclose and preclose > 0 and open_price is not None:
+            bid_change_pct = round((open_price / preclose - 1) * 100, 4)
+
+        return {
+            "auction_date": str(data.get("day") or "").strip() or None,
+            "preclose": preclose,
+            "open": open_price,
+            "high": _to_float(data.get("high")),
+            "low": _to_float(data.get("low")),
+            "bid_count": len(bid),
+            "first_price": first_price,
+            "last_price": auction_price,
+            "first_volume_hand": _to_float(first.get("volume")),
+            "final_volume_hand": final_volume_hand,
+            "peak_volume_hand": peak_volume_hand,
+            "withdraw_volume_hand": withdraw_volume_hand,
+            "bid_change_pct": bid_change_pct,
+            "estimated_turnover_amount": (
+                round(estimated_turnover_amount, 2)
+                if estimated_turnover_amount is not None
+                else None
+            ),
+        }
 
     # 说明：有意不实现 get_belong_board（个股所属板块）。
     #
@@ -861,6 +1191,7 @@ def _to_float(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
+
 def _to_int(value: Any) -> Optional[int]:
     """把上游可能给出的 str/float/None 统一成 int，无法解析返回 None。"""
     f = _to_float(value)
@@ -918,6 +1249,7 @@ def _recent_quarter_pairs(today: Optional[date] = None, limit: int = 4):
         pairs.append((d.isoformat(), quarters[i + 1].isoformat()))
     return pairs
 
+
 def _epoch_to_date(value: Any) -> Optional[str]:
     """秒级 epoch 转 ``YYYY-MM-DD``；无法解析返回 None。"""
     if value in (None, "", 0):
@@ -932,6 +1264,7 @@ def _epoch_to_date(value: Any) -> Optional[str]:
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
     except (OSError, OverflowError, ValueError):
         return None
+
 
 def _notify_credential_expired(reason: str) -> None:
     """KPL 凭证失效时推送系统错误通知。

@@ -3888,6 +3888,8 @@ class GeminiAnalyzer:
 ### 主力资金流向（操作建议过滤器）
 | 指标 | 数值 | 决策含义 |
 |------|------|----------|
+| 主力买入额 | {stock_flow.get('main_buy', 'N/A')} | 主动买盘规模 |
+| 主力卖出额 | {stock_flow.get('main_sell', 'N/A')} | 负值，主动卖盘规模 |
 | 主力净流入 | {stock_flow.get('main_net_inflow', 'N/A')} | 正值偏支持，负值偏压制 |
 | 5日净流入 | {stock_flow.get('inflow_5d', 'N/A')} | 用于判断资金持续性 |
 | 10日净流入 | {stock_flow.get('inflow_10d', 'N/A')} | 用于判断资金持续性 |
@@ -3915,6 +3917,42 @@ class GeminiAnalyzer:
 | **合计** | **{total}** | |
 
 > 北向资金持续净流入为市场整体情绪偏多信号，持续净流出则偏空；单日数据参考价值有限，需结合趋势判断。
+"""
+
+        # 添加竞价上下文（A股专用，与 Agent 的 get_auction_context 同源）
+        auction_ctx = context.get("auction_context")
+        if isinstance(auction_ctx, dict):
+            premarket = auction_ctx.get("today_premarket") or {}
+            prev_after = auction_ctx.get("prev_afterhours") or {}
+            today_after = auction_ctx.get("today_afterhours") or {}
+            auction_rows = []
+            if premarket:
+                auction_rows.append(
+                    f"| 当日盘前集合竞价 | 竞价价 {premarket.get('last_price', 'N/A')}"
+                    f"（较昨收 {premarket.get('bid_change_pct', 'N/A')}%） | "
+                    f"竞价量 {premarket.get('final_volume_hand', 'N/A')} 手，"
+                    f"撤单量 {premarket.get('withdraw_volume_hand', 'N/A')} 手 |"
+                )
+            if prev_after:
+                auction_rows.append(
+                    f"| 前日盘后固定价格交易 | 成交价 {prev_after.get('price', 'N/A')} | "
+                    f"成交量 {prev_after.get('total_volume_hand', 'N/A')} 手，"
+                    f"成交额 {prev_after.get('total_amount', 'N/A')} 元 |"
+                )
+            if today_after:
+                auction_rows.append(
+                    f"| 当日盘后固定价格交易 | 成交价 {today_after.get('price', 'N/A')} | "
+                    f"成交量 {today_after.get('total_volume_hand', 'N/A')} 手 |"
+                )
+            if auction_rows:
+                rows_text = "\n".join(auction_rows)
+                prompt += f"""
+### 竞价与盘后固定价格交易
+| 时段 | 价格 | 量能 |
+|------|------|------|
+{rows_text}
+
+> 盘前竞价高开放量且撤单少，说明资金承接意愿强；高开但撤单量大属于虚假承接。盘后固定价格交易放量常与机构调仓或大宗承接相关，需结合当日主力资金方向判断。
 """
 
         # 添加融资融券数据（A股专用）

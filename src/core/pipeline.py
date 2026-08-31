@@ -107,6 +107,27 @@ logger = logging.getLogger(__name__)
 _SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD = threading.Lock()
 _DAILY_MARKET_CONTEXT_SERVICE_LOCK_INIT_GUARD = threading.Lock()
 
+# Agent 自行检索新闻的工具；这些工具的返回值会作为 tool message 回到 LLM 上下文
+_AGENT_NEWS_TOOLS = ("search_stock_news", "search_comprehensive_intel")
+_AGENT_NEWS_CONTEXT_TEXT = {
+    "zh": "本次分析由 Agent 在运行中通过新闻检索工具（{tools}）实时获取，共 {count} 次成功调用，检索结果已进入本次 LLM 上下文。",
+    "en": "News was fetched by the agent at runtime via search tools ({tools}); {count} successful call(s), results entered this LLM run.",
+    "ko": "뉴스는 에이전트가 실행 중 검색 도구({tools})로 실시간 수집했으며, 성공 호출 {count}회의 결과가 이번 LLM 분석에 포함되었습니다.",
+}
+
+
+def _agent_news_tool_calls(tool_calls_log: Any) -> List[str]:
+    """Return names of successful agent news-search tool calls."""
+    if not isinstance(tool_calls_log, list):
+        return []
+    return [
+        str(entry.get("tool"))
+        for entry in tool_calls_log
+        if isinstance(entry, dict)
+        and entry.get("tool") in _AGENT_NEWS_TOOLS
+        and entry.get("success")
+    ]
+
 
 def _symbol_scope_lookup_values(code: str, market: str) -> List[str]:
     """Return accepted persisted-intelligence symbol spellings for lookup."""
@@ -691,6 +712,7 @@ class StockAnalysisPipeline:
             _northbound_ctx: Optional[Dict[str, Any]] = None
             _margin_ctx: Optional[Dict[str, Any]] = None
             _research_ctx: Optional[Dict[str, Any]] = None
+            _auction_ctx: Optional[Dict[str, Any]] = None
             if _is_cn:
                 _northbound_ctx = self._get_cached_northbound_context()
                 try:
@@ -701,6 +723,13 @@ class StockAnalysisPipeline:
                     _research_ctx = self.fetcher_manager.get_research_report_context(code)
                 except Exception as _exc:
                     logger.warning("%s(%s) 研报获取失败: %s", stock_name, code, _exc)
+                # 竞价上下文与 Agent 路径的 get_auction_context 工具同源（KPL）
+                try:
+                    _kpl_fetcher = self.fetcher_manager._get_fetcher_by_name("KplFetcher")
+                    if _kpl_fetcher is not None:
+                        _auction_ctx = _kpl_fetcher.get_auction_context(code)
+                except Exception as _exc:
+                    logger.warning("%s(%s) 竞价上下文获取失败: %s", stock_name, code, _exc)
             if persisted_intelligence_context:
                 news_context = (
                     f"{news_context}\n\n{persisted_intelligence_context}"
@@ -751,6 +780,8 @@ class StockAnalysisPipeline:
                 enhanced_context["margin_trading_context"] = _margin_ctx
             if _research_ctx is not None:
                 enhanced_context["research_report_context"] = _research_ctx
+            if _auction_ctx is not None:
+                enhanced_context["auction_context"] = _auction_ctx
             if isinstance(market_structure_context, dict):
                 enhanced_context["market_structure_context"] = market_structure_context
 
@@ -1596,6 +1627,45 @@ class StockAnalysisPipeline:
             )
             if result:
                 result.query_id = query_id
+
+            # Agent 在运行中自行检索的新闻晚于 pack 构建时点，若不回填会误报
+            # news_context_missing（结论其实已使用新闻）
+            if not str(initial_context.get("news_context") or "").strip():
+                _news_calls = _agent_news_tool_calls(
+                    getattr(agent_result, "tool_calls_log", None)
+                )
+                if _news_calls:
+                    _template = _AGENT_NEWS_CONTEXT_TEXT.get(
+                        report_language, _AGENT_NEWS_CONTEXT_TEXT["zh"]
+                    )
+                    _, _rebuilt_overview = self._build_analysis_context_pack_outputs(
+                        self._build_agent_analysis_artifacts(
+                            code=code,
+                            stock_name=stock_name,
+                            market=market,
+                            phase=market_phase_context,
+                            initial_context=initial_context,
+                            fundamental_context=fundamental_context,
+                            query_id=query_id,
+                            base_context=analysis_context,
+                            portfolio_context=portfolio_context,
+                            news_context_override=_template.format(
+                                tools=", ".join(sorted(set(_news_calls))),
+                                count=len(_news_calls),
+                            ),
+                        ),
+                        report_language=report_language,
+                        code=code,
+                        query_id=query_id,
+                    )
+                    if _rebuilt_overview:
+                        analysis_context_pack_overview = _rebuilt_overview
+                        logger.info(
+                            "[%s] Agent mode: news block backfilled from %d tool call(s)",
+                            code,
+                            len(_news_calls),
+                        )
+
             # Agent weak integrity: placeholder fill only, no LLM retry
             if result and getattr(self.config, "report_integrity_enabled", False):
                 from src.analyzer import check_content_integrity, apply_placeholder_fill
@@ -2970,6 +3040,8 @@ class StockAnalysisPipeline:
         query_id: str,
         base_context: Optional[Dict[str, Any]] = None,
         portfolio_context: Optional[Dict[str, Any]] = None,
+        news_context_override: Optional[str] = None,
+        news_result_count: Optional[int] = None,
     ) -> PipelineAnalysisArtifacts:
         context_candidate = base_context
         if not isinstance(context_candidate, dict):
@@ -2999,8 +3071,8 @@ class StockAnalysisPipeline:
             trend_result=initial_context.get("trend_result"),
             chip_data=initial_context.get("chip_distribution"),
             fundamental_context=fundamental_context,
-            news_context=initial_context.get("news_context"),
-            news_result_count=None,
+            news_context=news_context_override or initial_context.get("news_context"),
+            news_result_count=news_result_count,
             metadata={
                 "query_id": query_id,
                 "trigger_source": self.query_source,

@@ -232,6 +232,98 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("接近压力且主力流出时不得追买", prompt)
         self.assertIn("洗盘观察", prompt)
 
+    def test_prompt_includes_main_buy_sell_split(self) -> None:
+        """KPL 提供买/卖拆分时，非 Agent 路径的 prompt 表格也要带上。"""
+        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+            analyzer = GeminiAnalyzer()
+
+        context = {
+            "code": "002440",
+            "stock_name": "闰土股份",
+            "date": "2026-08-18",
+            "today": {"close": 12.3},
+            "fundamental_context": {
+                "capital_flow": {
+                    "status": "ok",
+                    "data": {
+                        "stock_flow": {
+                            "main_buy": 963386536.0,
+                            "main_sell": -1026058993.0,
+                            "main_net_inflow": -62672457.0,
+                            "inflow_5d": None,
+                            "inflow_10d": None,
+                        },
+                        "sector_rankings": {"top": [], "bottom": []},
+                    },
+                }
+            },
+        }
+
+        prompt = analyzer._format_prompt(context, "闰土股份", news_context=None)
+
+        self.assertIn("主力买入额", prompt)
+        self.assertIn("963386536", prompt)
+        self.assertIn("主力卖出额", prompt)
+        self.assertIn("-1026058993", prompt)
+
+    def test_prompt_includes_auction_context(self) -> None:
+        """非 Agent 路径也要把竞价上下文喂给 LLM。"""
+        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+            analyzer = GeminiAnalyzer()
+
+        context = {
+            "code": "002440",
+            "stock_name": "闰土股份",
+            "date": "2026-08-18",
+            "today": {"close": 12.3},
+            "auction_context": {
+                "stock_code": "002440",
+                "today_premarket": {
+                    "last_price": 12.51,
+                    "bid_change_pct": 1.87,
+                    "final_volume_hand": 4210.0,
+                    "withdraw_volume_hand": 130.0,
+                },
+                "prev_afterhours": {
+                    "price": 12.28,
+                    "total_volume_hand": 860.0,
+                    "total_amount": 1056080.0,
+                },
+                "today_afterhours": {},
+            },
+        }
+
+        prompt = analyzer._format_prompt(context, "闰土股份", news_context=None)
+
+        self.assertIn("竞价与盘后固定价格交易", prompt)
+        self.assertIn("当日盘前集合竞价", prompt)
+        self.assertIn("12.51", prompt)
+        self.assertIn("1.87", prompt)
+        self.assertIn("前日盘后固定价格交易", prompt)
+        # 空会话不产生表格行
+        self.assertNotIn("当日盘后固定价格交易", prompt)
+
+    def test_prompt_omits_auction_block_when_all_sessions_empty(self) -> None:
+        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+            analyzer = GeminiAnalyzer()
+
+        context = {
+            "code": "002440",
+            "stock_name": "闰土股份",
+            "date": "2026-08-18",
+            "today": {"close": 12.3},
+            "auction_context": {
+                "stock_code": "002440",
+                "today_premarket": {},
+                "prev_afterhours": {},
+                "today_afterhours": {},
+            },
+        }
+
+        prompt = analyzer._format_prompt(context, "闰土股份", news_context=None)
+
+        self.assertNotIn("竞价与盘后固定价格交易", prompt)
+
     def test_prompt_prefers_context_news_window_days(self) -> None:
         with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
             analyzer = GeminiAnalyzer()

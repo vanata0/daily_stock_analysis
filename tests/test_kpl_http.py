@@ -45,10 +45,17 @@ def _resp(status: int = 200, payload=None, text: str = ""):
     return r
 
 
-# 一个真实交易日的探针返回（数值取自 2026-07-24 实测）
-HEALTHY_BREADTH = {"rise_count": 555, "fall_count": 4939, "limit_up_count": 40}
-# 凭证失效时上游的表现：HTTP 200 + errcode=0 + 全空
-EXPIRED_BREADTH = {"rise_count": 0, "fall_count": 0, "limit_up_count": 0}
+def _probe(client, status: int, text: str = ""):
+    """给 /health/credential 打桩：探针直接读 session.get 的状态码，不经过 client.get()。"""
+    return patch.object(client._session, "get", return_value=_resp(status, text=text))
+
+
+class TestKplConnectionReuse(unittest.TestCase):
+    """本机回环调用不复用连接，避免空闲 socket 滞留在 CLOSE-WAIT。"""
+
+    def test_session_disables_keep_alive(self) -> None:
+        client = KplHttpClient()
+        self.assertEqual(client._session.headers.get("Connection"), "close")
 
 
 class TestKplHttpErrorMapping(unittest.TestCase):
@@ -87,42 +94,63 @@ class TestKplHttpErrorMapping(unittest.TestCase):
 
 
 class TestKplCredentialProbe(unittest.TestCase):
-    """凭证失效探针 —— 本次接入的安全底线。"""
+    """凭证失效探针 —— 打 /health/credential，不经过任何业务 Response Model。
 
-    def test_healthy_breadth_is_valid(self) -> None:
+    2026-08-11~12 的真实事故：旧探针打业务端点 /market-stats/mood-num-count，
+    该端点因响应模型必填了一个客户端已改名的字段而稳定 500，把 KPL 全部接口
+    一起拖进降级。/health/credential 是 kpl-unified-client 专为此开的探针端点，
+    响应不经过业务模型，只用状态码传递语义（200/401/503）。
+    """
+
+    def test_200_is_valid(self) -> None:
         client = KplHttpClient()
-        with patch.object(client, "get", return_value=HEALTHY_BREADTH):
+        with _probe(client, 200):
             self.assertTrue(client.is_credential_valid())
 
-    def test_empty_breadth_on_trading_day_is_invalid(self) -> None:
-        """交易日涨跌家数全 0 == 凭证失效（真实行情不可能出现）。"""
+    def test_401_on_trading_day_after_open_is_invalid(self) -> None:
+        """开盘后仍 401 == 凭证失效。"""
         client = KplHttpClient()
-        with patch.object(client, "get", return_value=EXPIRED_BREADTH), \
+        with _probe(client, 401, text="empty_response"), \
                 patch.object(client, "_is_trading_day", return_value=True), \
                 patch.object(client, "_is_before_market_open", return_value=False):
             self.assertFalse(client.is_credential_valid())
 
-    def test_empty_breadth_on_non_trading_day_stays_valid(self) -> None:
+    def test_401_on_non_trading_day_stays_valid(self) -> None:
         """休市当天没有涨跌家数，不能据此判定凭证失效。"""
         client = KplHttpClient()
-        with patch.object(client, "get", return_value=EXPIRED_BREADTH), \
-                patch.object(client, "_is_trading_day", return_value=False):
+        with _probe(client, 401), patch.object(client, "_is_trading_day", return_value=False):
             self.assertTrue(client.is_credential_valid())
 
     def test_rate_limited_probe_does_not_mark_invalid(self) -> None:
         """限流不代表凭证失效，否则会因为并发把整个数据源误杀。"""
         client = KplHttpClient()
-        with patch.object(client, "get", side_effect=KplRateLimitError("429")):
+        with _probe(client, 429, text="too many"):
             self.assertTrue(client.is_credential_valid())
+
+    def test_upstream_unreachable_marks_unavailable_without_alert(self) -> None:
+        """503 是上游问题，判不可用但不是凭证失效，不应触发凭证失效告警。"""
+        fired = []
+        client = KplHttpClient(on_credential_expired=lambda r: fired.append(r))
+        with _probe(client, 503, text="upstream_error"):
+            self.assertFalse(client.is_credential_valid())
+        self.assertEqual(fired, [])
 
     def test_request_failure_marks_unavailable(self) -> None:
         client = KplHttpClient()
-        with patch.object(client, "get", side_effect=KplRequestError("connection refused")):
+        with patch.object(
+            client._session, "get", side_effect=requests.exceptions.ConnectTimeout("boom")
+        ):
+            self.assertFalse(client.is_credential_valid())
+
+    def test_unexpected_status_marks_unavailable(self) -> None:
+        """既不是探针约定的三档状态码，也判不可用，不能当成 200 放行。"""
+        client = KplHttpClient()
+        with _probe(client, 500, text="Internal Server Error"):
             self.assertFalse(client.is_credential_valid())
 
     def test_probe_result_is_cached_within_ttl(self) -> None:
         client = KplHttpClient()
-        with patch.object(client, "get", return_value=HEALTHY_BREADTH) as mocked:
+        with patch.object(client._session, "get", return_value=_resp(200)) as mocked:
             self.assertTrue(client.is_credential_valid())
             self.assertTrue(client.is_credential_valid())
             self.assertTrue(client.is_credential_valid())
@@ -130,24 +158,18 @@ class TestKplCredentialProbe(unittest.TestCase):
 
     def test_force_bypasses_cache(self) -> None:
         client = KplHttpClient()
-        with patch.object(client, "get", return_value=HEALTHY_BREADTH) as mocked:
+        with patch.object(client._session, "get", return_value=_resp(200)) as mocked:
             client.is_credential_valid()
             client.is_credential_valid(force=True)
         self.assertEqual(mocked.call_count, 2)
 
     def test_reset_probe_cache_forces_reprobe(self) -> None:
         client = KplHttpClient()
-        with patch.object(client, "get", return_value=HEALTHY_BREADTH) as mocked:
+        with patch.object(client._session, "get", return_value=_resp(200)) as mocked:
             client.is_credential_valid()
             client.reset_probe_cache()
             client.is_credential_valid()
         self.assertEqual(mocked.call_count, 2)
-
-    def test_string_counts_are_tolerated(self) -> None:
-        """上游历史上混用过 int 与字符串，解析不能因此判失效。"""
-        client = KplHttpClient()
-        with patch.object(client, "get", return_value={"rise_count": "555", "fall_count": "4939"}):
-            self.assertTrue(client.is_credential_valid())
 
 
 class TestPreMarketOpenWindow(unittest.TestCase):
@@ -159,9 +181,9 @@ class TestPreMarketOpenWindow(unittest.TestCase):
     不可用，并且每天早上误发一次凭证失效告警。
     """
 
-    def test_empty_breadth_before_open_stays_valid(self) -> None:
+    def test_401_before_open_stays_valid(self) -> None:
         client = KplHttpClient()
-        with patch.object(client, "get", return_value=EXPIRED_BREADTH), \
+        with _probe(client, 401), \
                 patch.object(client, "_is_trading_day", return_value=True), \
                 patch.object(client, "_is_before_market_open", return_value=True):
             self.assertTrue(client.is_credential_valid())
@@ -169,7 +191,7 @@ class TestPreMarketOpenWindow(unittest.TestCase):
     def test_no_alert_before_open(self) -> None:
         fired = []
         c = KplHttpClient(on_credential_expired=lambda r: fired.append(r))
-        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
+        with _probe(c, 401), \
                 patch.object(c, "_is_trading_day", return_value=True), \
                 patch.object(c, "_is_before_market_open", return_value=True):
             c.is_credential_valid()
@@ -188,10 +210,10 @@ class TestPreMarketOpenWindow(unittest.TestCase):
                     expected,
                 )
 
-    def test_after_open_empty_breadth_is_invalid(self) -> None:
-        """开盘后仍然全 0 才是真正的凭证失效。"""
+    def test_after_open_401_is_invalid(self) -> None:
+        """开盘后仍然 401 才是真正的凭证失效。"""
         client = KplHttpClient()
-        with patch.object(client, "get", return_value=EXPIRED_BREADTH), \
+        with _probe(client, 401), \
                 patch.object(client, "_is_trading_day", return_value=True), \
                 patch.object(client, "_is_before_market_open", return_value=False):
             self.assertFalse(client.is_credential_valid())
@@ -261,17 +283,17 @@ class TestCredentialExpiredCallback(unittest.TestCase):
     def test_callback_fires_on_trading_day_expiry(self) -> None:
         fired = []
         c = self._client(fired)
-        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
+        with _probe(c, 401, text="empty_response"), \
                 patch.object(c, "_is_trading_day", return_value=True), \
                 patch.object(c, "_is_before_market_open", return_value=False):
             self.assertFalse(c.is_credential_valid())
         self.assertEqual(len(fired), 1)
-        self.assertIn("rise=0", fired[0])
+        self.assertIn("empty_response", fired[0])
 
     def test_callback_not_fired_when_healthy(self) -> None:
         fired = []
         c = self._client(fired)
-        with patch.object(c, "get", return_value=HEALTHY_BREADTH):
+        with _probe(c, 200):
             c.is_credential_valid()
         self.assertEqual(fired, [])
 
@@ -279,8 +301,7 @@ class TestCredentialExpiredCallback(unittest.TestCase):
         """休市空数据不是失效，不能误报。"""
         fired = []
         c = self._client(fired)
-        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
-                patch.object(c, "_is_trading_day", return_value=False):
+        with _probe(c, 401), patch.object(c, "_is_trading_day", return_value=False):
             c.is_credential_valid()
         self.assertEqual(fired, [])
 
@@ -288,7 +309,7 @@ class TestCredentialExpiredCallback(unittest.TestCase):
         """探针 TTL 每 5 分钟到期一次，不能每次都重复告警。"""
         fired = []
         c = self._client(fired)
-        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
+        with _probe(c, 401), \
                 patch.object(c, "_is_trading_day", return_value=True), \
                 patch.object(c, "_is_before_market_open", return_value=False):
             for _ in range(4):
@@ -300,14 +321,14 @@ class TestCredentialExpiredCallback(unittest.TestCase):
         def boom(_reason):
             raise RuntimeError("notification stack down")
         c = KplHttpClient(on_credential_expired=boom)
-        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
+        with _probe(c, 401), \
                 patch.object(c, "_is_trading_day", return_value=True), \
                 patch.object(c, "_is_before_market_open", return_value=False):
             self.assertFalse(c.is_credential_valid())
 
     def test_no_callback_configured_is_safe(self) -> None:
         c = KplHttpClient()
-        with patch.object(c, "get", return_value=EXPIRED_BREADTH), \
+        with _probe(c, 401), \
                 patch.object(c, "_is_trading_day", return_value=True), \
                 patch.object(c, "_is_before_market_open", return_value=False):
             self.assertFalse(c.is_credential_valid())

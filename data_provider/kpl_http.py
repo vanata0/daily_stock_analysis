@@ -12,17 +12,26 @@ KPL 的 UserID/Token/DeviceID 来自抓包，会过期。过期后上游**不报
 所有接口返回 HTTP 200 + errcode=0 + 空数组。对无人值守的定时分析来说，这种
 静默失效会直接产出垃圾报告。
 
-本模块用「金丝雀端点 + 语义非空断言」把静默失效转成显式不可用：
-  - 探针端点 /market-stats/mood-num-count
-  - 判据 rise_count == 0 且 fall_count == 0
-    （A 股任一交易日两者之和都在 4000 以上，同时为 0 只可能是凭证失效或上游故障）
-  - 非交易日不做判定（休市本就没有涨跌家数），避免把节假日误判成失效
-  - 交易日 09:30 之前同样不做判定：上游会在早盘前把上一交易日的涨跌家数清零，
-    此时全 0 是正常状态；漏掉这段会让每个交易日开盘前 KPL 全线不可用并误发告警
+探针端点 GET /health/credential（kpl-unified-client 专为下游探测开的健康检查，
+不经过任何业务 Response Model）：
+  - 200 可用
+  - 401 凭证问题（上游真打了一次最轻接口，拿到的关键字段全空）
+  - 503 上游不可达
+  - 401 时仍需排除两种误报窗口，逻辑与旧探针一致：非交易日不做判定（休市本就
+    没有涨跌家数）；交易日 09:30 之前同样不做判定（上游会在早盘前把上一交易日
+    的涨跌家数清零，此时全 0 是正常状态）——漏掉这段会让每个交易日开盘前 KPL
+    全线不可用并误发告警
+
+  ⚠️ 之前的探针打 /market-stats/mood-num-count 这个业务端点，2026-08-11 17:52~
+  08-12 01:15 该端点因响应模型必填了一个客户端已改名的字段而稳定 500，
+  is_available() 被拖到全线 False，KPL 所有接口一起短路回落到其它数据源
+  （见 kpl-unified-client commit 908ac80/bb2ff66）。/health/credential 不经过
+  业务模型，字段语义订正不会再影响这条探针。
 
 探测结果按 TTL 缓存，不会每次取数都打一次探针。
 
-上游错误码约定（见 kpl-unified-client/docs/howto-handle-errors-and-rate-limits.md）：
+上游错误码约定（见 kpl-unified-client/docs/howto-handle-errors-and-rate-limits.md，
+适用于本模块 get() 打的其它业务端点，不适用于 /health/credential 自身的三档状态码）：
   401 KPLAuthError    —— 凭证缺失，服务启动期就会 fail fast，运行期理论上不出现
   429 本地限流桶拦截
   502 upstream_error  —— errcode != 0（最常见 1020 参数错误），与凭证无关
@@ -46,10 +55,6 @@ DEFAULT_TIMEOUT = 10
 # 凭证探针结果缓存时长；探针本身只有一次轻量请求，5 分钟足以在
 # 凭证过期后较快暴露，又不会给每次取数都增加往返。
 _PROBE_TTL_SECONDS = 300
-
-# 探针判据：A 股任一交易日 rise_count + fall_count 都远超此值，
-# 低于它说明拿到的是空数据而非真实行情。
-_MIN_TRADING_BREADTH = 100
 
 # A 股连续竞价开始时刻。此前涨跌家数为 0 属正常（集合竞价 09:25 才出结果，
 # 上游在早盘前会把上一交易日的数值清零），不能据此判定凭证失效。
@@ -92,9 +97,14 @@ class KplHttpClient:
         self._timeout = timeout if timeout and timeout > 0 else DEFAULT_TIMEOUT
         self._probe_ttl = probe_ttl_seconds
         self._on_credential_expired = on_credential_expired
-        # requests.Session 复用连接；DSA 是多线程取数，Session 本身线程安全，
-        # 但探针缓存需要自己加锁。
+        # requests.Session 承载公共 header 与重试配置；DSA 是多线程取数，
+        # Session 本身线程安全，但探针缓存需要自己加锁。
         self._session = requests.Session()
+        # 显式关闭连接复用：KPL 服务是本机回环（127.0.0.1），keep-alive 省下的
+        # 握手成本可忽略；而上游 uvicorn 的 keep-alive 超时会主动 FIN 掉空闲连接，
+        # urllib3 连接池感知不到，socket 会停在 CLOSE-WAIT 直到该槽位被再次复用。
+        # 实测 2026-08-18 一波 502 之后 9 条连接滞留了近 8 小时。
+        self._session.headers["Connection"] = "close"
         self._lock = threading.Lock()
         self._probe_ok: Optional[bool] = None
         self._probe_at: float = 0.0
@@ -162,46 +172,48 @@ class KplHttpClient:
         return ok
 
     def _run_probe(self) -> bool:
+        url = f"{self._base_url}/health/credential"
         try:
-            data = self.get("/market-stats/mood-num-count")
-        except KplRateLimitError as exc:
-            # 限流不代表凭证失效，保持可用并让调用方自行重试
-            logger.warning("[KPL] 探针被限流，暂按可用处理: %s", exc)
-            return True
-        except KplError as exc:
+            resp = self._session.get(url, timeout=self._timeout)
+        except requests.exceptions.RequestException as exc:
             logger.error("[KPL] 探针请求失败，判定不可用: %s", exc)
             return False
 
-        rise = _as_int(data.get("rise_count"))
-        fall = _as_int(data.get("fall_count"))
-        breadth = rise + fall
-
-        if breadth >= _MIN_TRADING_BREADTH:
-            logger.debug("[KPL] 凭证探针通过 (rise=%d fall=%d)", rise, fall)
+        if resp.status_code == 200:
+            logger.debug("[KPL] 凭证探针通过")
             return True
 
-        # 空数据：先排除非交易日，避免把休市误判成凭证失效
-        if not self._is_trading_day():
-            logger.info(
-                "[KPL] 探针返回空数据但今日非交易日，不判定为凭证失效 "
-                "(rise=%d fall=%d)", rise, fall,
+        if resp.status_code == 429:
+            # 限流不代表凭证失效，保持可用并让调用方自行重试
+            logger.warning("[KPL] 探针被限流，暂按可用处理: %s", resp.text[:120])
+            return True
+
+        if resp.status_code == 503:
+            # 上游不可达，与凭证无关，不触发凭证失效告警
+            logger.warning("[KPL] 探针判定上游不可达: %s", resp.text[:160])
+            return False
+
+        if resp.status_code != 401:
+            logger.error(
+                "[KPL] 探针返回异常状态码 %s: %s", resp.status_code, resp.text[:160]
             )
+            return False
+
+        # 401：探针认为拿不到数据，先排除非交易日，避免把休市误判成凭证失效
+        if not self._is_trading_day():
+            logger.info("[KPL] 探针返回 401 但今日非交易日，不判定为凭证失效")
             return True
 
         # 再排除交易日的开盘前时段：上游会在当天早盘前把上一交易日的涨跌家数
-        # 清零，此时全 0 是正常状态而非凭证失效。实测 2026-07-28 09:01
+        # 清零，此时全空是正常状态而非凭证失效。实测 2026-07-28 09:01
         # （交易日、未开盘）该端点返回 rise=0/fall=0 且 errcode='0'，凭证完全
         # 有效。漏掉这一段会让每个交易日 9:30 之前 KPL 全线不可用并误发告警。
         if self._is_before_market_open():
-            logger.info(
-                "[KPL] 探针返回空数据但尚未开盘，不判定为凭证失效 "
-                "(rise=%d fall=%d)", rise, fall,
-            )
+            logger.info("[KPL] 探针返回 401 但尚未开盘，不判定为凭证失效")
             return True
 
         reason = (
-            f"交易日探针涨跌家数为空 (rise={rise} fall={fall})。"
-            "上游接口在凭证过期时会静默返回空数据，"
+            f"探针判定凭证失效：{resp.text[:160]}。"
             "请重新抓包更新 kpl-unified-client 的 .env"
         )
         logger.error("[KPL] 凭证疑似失效：%s", reason)
@@ -281,16 +293,6 @@ class KplHttpClient:
             self._session.close()
         except Exception as exc:  # pragma: no cover - 关闭失败不影响主流程
             logger.debug("[KPL] 关闭 session 异常: %s", exc)
-
-
-def _as_int(value: Any) -> int:
-    """把上游可能给出的 str/float/None 统一成 int，无法解析按 0 处理。"""
-    if value is None:
-        return 0
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return 0
 
 
 def kpl_date_to_iso(value: Any) -> Optional[str]:

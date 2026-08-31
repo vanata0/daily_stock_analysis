@@ -33,8 +33,8 @@ except ValueError:
 if not json_repair_available and "json_repair" not in sys.modules:
     sys.modules["json_repair"] = MagicMock()
 
-from data_provider.kpl_fetcher import KplFetcher
-from data_provider.kpl_http import KplRequestError
+from data_provider.kpl_fetcher import KplFetcher, _FLOW_CONSECUTIVE_FAILURE_LIMIT
+from data_provider.kpl_http import KplRateLimitError, KplRequestError
 
 # 取自 000977 实测（2026-07-20~24）：main_sell 上游已是负值。
 # 日期必须相对今天生成：get_capital_flow() 从 date.today() 往前只回溯
@@ -142,6 +142,51 @@ class TestCapitalFlowAggregation(unittest.TestCase):
     def test_single_day_failure_does_not_abort(self) -> None:
         r = _fetcher(fail_days={_THIRD_DAY}).get_capital_flow("000977", days=3)
         self.assertIsNotNone(r)
+
+    def test_upstream_outage_stops_after_consecutive_failures(self) -> None:
+        """上游整体故障时不把回溯窗口全部打完。
+
+        逐日回溯本可发出 wanted*2 + _FLOW_LOOKBACK_SLACK 个请求；连续失败达阈值
+        即判定上游不可用，避免给故障中的服务继续加压（2026-08-18 实测一次批量
+        分析打出 252 个全失败请求）。
+        """
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+
+        def always_down(path, params=None):
+            raise KplRequestError(f"KPL HTTP 502 {path}")
+
+        client.get.side_effect = always_down
+        f = KplFetcher(client=client)
+        self.assertIsNone(f.get_capital_flow("000977", days=5))
+        chouma_calls = [
+            c for c in client.get.call_args_list if "chouma-history" in c.args[0]
+        ]
+        self.assertEqual(len(chouma_calls), _FLOW_CONSECUTIVE_FAILURE_LIMIT)
+
+    def test_rate_limit_stops_immediately(self) -> None:
+        """限流下继续逐日打只会加剧，第一次撞上就收手。"""
+        client = MagicMock()
+        client.is_credential_valid.return_value = True
+
+        def limited(path, params=None):
+            if "chouma-history" in path:
+                raise KplRateLimitError("KPL 限流")
+            return {"items": []}
+
+        client.get.side_effect = limited
+        f = KplFetcher(client=client)
+        f.get_capital_flow("000977", days=5)
+        chouma_calls = [
+            c for c in client.get.call_args_list if "chouma-history" in c.args[0]
+        ]
+        self.assertEqual(len(chouma_calls), 1)
+
+    def test_isolated_failures_do_not_trip_the_breaker(self) -> None:
+        """失败被成功日打断就重新计数，整段历史仍然取满。"""
+        bad = set(list(DAILY)[1:2])
+        r = _fetcher(fail_days=bad).get_capital_flow("000977", days=3)
+        self.assertIsNotNone(r["main_net_inflow"])
 
     def test_none_when_unavailable_or_empty(self) -> None:
         self.assertIsNone(_fetcher(valid=False).get_capital_flow("000977"))

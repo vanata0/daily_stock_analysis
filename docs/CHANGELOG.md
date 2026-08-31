@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] KPL 个股资金流逐日回溯在上游整体故障时不再打满整个窗口：`get_capital_flow` 原本会把 `wanted*2 + _FLOW_LOOKBACK_SLACK` 天全部请求完（2026-08-18 一次自选股批量分析实测打出 252 个 `chouma-history` 请求、全部 502），既拖慢分析又给故障中的上游加压。现在连续 3 天取数失败即判定上游不可用并放弃剩余回溯，命中限流（429）则立即收手；单日偶发失败被成功日打断后重新计数，不影响正常取数。
 - [修复] Agent 模式下运行诊断误报 `news_context_missing`：AnalysisContextPack 在 Agent 启动前构建，只能看到预取的公告/东财新闻/本地情报池；Agent 运行中自己调用 `search_stock_news` / `search_comprehensive_intel` 取回的新闻晚于该时点，因此三路预取全空时（如 Tushare token 过期 + 东财新闻被汇总噪音过滤 + 本地情报池无记录），即使 LLM 实际读到了新闻，运行诊断仍显示「新闻缺失」。现在 Agent 结束后按 `news_result_count` 回填 news 块并重建运行诊断概览，计数与报告层的空新闻披露同源（均来自 `news_evidence` 累加器），检索零命中或渠道不可用时不回填。
 - [新功能] KPL 盘前/盘后竞价聚合上下文接入：`get_auction_context` 汇总前日盘后固定价格交易（15:05~15:30）与当日盘前集合竞价（09:15~09:25）的有效字段；前日盘后直接取 `/kline/stock-fenbi2` 历史分笔中的 15:05~15:29 切片（含 volume/amount），当日 15:30 后再叠加 `/market-stats/afterhours-auction-trend` 当日盘后，不再依赖本地快照。输出为聚合摘要而非原始逐条序列。三条分析链路均已接入：Agent 数据工具 `get_auction_context`、多 Agent 编排的 IntelAgent、单 Agent 系统提示第二阶段，以及非 Agent 路径的「竞价与盘后固定价格交易」prompt 表格（A 股专用，fail-open，无数据时不产生该表格）。
 - [改进] KPL 个股资金流在原有净额与多日累计之外，透传当日 `main_buy` / `main_sell` 两个主力资金字段（`main_sell` 为负值，单位元）；`get_capital_flow` 工具与非 Agent 路径的「主力资金流向」prompt 表格同步带上买/卖拆分。净额仍统一用既有的 `main_net_inflow`，不再另出同值的 `main_net`——Mairui / AkShare 兜底路径不产该键，两个近义字段在降级时会变成「一个有值一个 None」的噪音。

@@ -38,7 +38,7 @@ from .base import (
     STANDARD_COLUMNS,
     normalize_stock_code,
 )
-from .kpl_http import KplError, KplHttpClient, kpl_date_to_iso
+from .kpl_http import KplError, KplHttpClient, KplRateLimitError, kpl_date_to_iso
 from .realtime_types import ChipDistribution, RealtimeSource, UnifiedRealtimeQuote
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,11 @@ _MAX_FLOW_DAYS = 10
 # 连休(约 9 天)，即约 27 个日历日；余量取 20 让最坏情况仍有富裕，多探的日子
 # 只会命中空响应并被跳过，成本是几次本地 HTTP 调用。
 _FLOW_LOOKBACK_SLACK = 20
+# 连续多少天取数失败就放弃剩余回溯。上游整体故障时，逐日回溯会把
+# wanted*2 + _FLOW_LOOKBACK_SLACK 天全部打完（实测 2026-08-18 一次批量分析打出
+# 252 个 chouma-history 请求、无一成功），既拖慢分析又给故障中的上游加压。
+# 阈值取 3 而不是 1：单日偶发失败仍应继续回溯，只有连续失败才判定为上游不可用。
+_FLOW_CONSECUTIVE_FAILURE_LIMIT = 3
 
 
 class KplFetcher(BaseFetcher):
@@ -365,6 +370,7 @@ class KplFetcher(BaseFetcher):
             latest_day = realtime["trade_date"]
 
         cursor = date.today() - timedelta(days=1 if realtime is not None else 0)
+        consecutive_failures = 0
         # 上游按自然日索引，非交易日返回空；这里往前多探一些日历日以凑够交易日
         for _ in range(wanted * 2 + _FLOW_LOOKBACK_SLACK):
             if len(daily) >= wanted:
@@ -377,10 +383,27 @@ class KplFetcher(BaseFetcher):
                 payload = self._client.get(
                     f"/big-money/chouma-history/{code}", params={"day": day_str}
                 )
+            except KplRateLimitError as exc:
+                # 已经被限流桶拦下，继续逐日打只会加剧，立即收手交给上层降级
+                logger.warning(
+                    "[KplFetcher] 资金流 %s 触发限流，放弃剩余回溯: %s", stock_code, exc
+                )
+                break
             except KplError as exc:
+                consecutive_failures += 1
                 logger.debug("[KplFetcher] 资金流 %s %s 取数失败: %s", stock_code, day_str, exc)
+                if consecutive_failures >= _FLOW_CONSECUTIVE_FAILURE_LIMIT:
+                    logger.warning(
+                        "[KplFetcher] 资金流 %s 连续 %d 天取数失败，判定上游不可用，"
+                        "放弃剩余回溯",
+                        stock_code,
+                        consecutive_failures,
+                    )
+                    break
                 continue
 
+            # 空 items 是非交易日的正常 200 响应，说明服务本身是通的
+            consecutive_failures = 0
             items = payload.get("items") or []
             if not items:
                 continue

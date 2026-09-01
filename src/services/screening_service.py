@@ -2744,16 +2744,21 @@ class DsaEastMoneyHotspotProvider:
         import akshare as ak
         from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
-        fetch = (
-            ak.stock_board_industry_cons_em
+        # 名字与函数一起取定，不从对象反射：akshare 的入口不保证是带 __name__
+        # 的普通函数（测试里会被替换成 MagicMock，生产上也可能是 partial 或
+        # 包装对象），而 call_name 要用来区分超时预算，反射失败既不能崩也不能
+        # 退化成通用占位。
+        fetch_name = (
+            "stock_board_industry_cons_em"
             if source == "industry"
-            else ak.stock_board_concept_cons_em
+            else "stock_board_concept_cons_em"
         )
+        fetch = getattr(ak, fetch_name)
         return _akshare_call_with_timeout(
             fetch,
             symbol=topic,
             timeout=self._akshare_timeout_seconds(),
-            call_name=f"screening.{fetch.__name__}",
+            call_name=f"screening.{fetch_name}",
         )
 
     def _fetch_ths_constituents(self, topic: str) -> Any:

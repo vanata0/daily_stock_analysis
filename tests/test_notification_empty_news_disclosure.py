@@ -294,9 +294,15 @@ class NoSearchProviderDisclosureTestCase(unittest.TestCase):
     """锁住 #2225 的 fresh-clone 场景：没有 key，公共实例默认关闭。"""
 
     def test_no_registered_providers_discloses_missing_news_evidence(self):
+        from unittest.mock import patch
+
         from src.search_service import SearchService
 
-        search_service = SearchService(searxng_public_instances_enabled=False)
+        # KplSearchProvider 是否注册取决于本机 .env 的 KPL_ENABLED，注册后
+        # _providers 非空、is_available 为 True，这条「一个搜索渠道都没有」的
+        # 前提就不成立了。固定按未启用 KPL 构造，与 CI 环境一致。
+        with patch.object(SearchService, "_build_kpl_provider", return_value=None):
+            search_service = SearchService(searxng_public_instances_enabled=False)
         self.assertEqual([], search_service._providers)
         self.assertFalse(search_service.is_available)
 

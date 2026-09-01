@@ -11,10 +11,12 @@ Covers:
 - Stock dataclass / resolver_name_to_code_list / US_stock_code_match / extend_AkShare
 """
 
+import importlib
+import sys
 import threading
 import time
 from typing import Optional
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -30,6 +32,31 @@ from src.services.name_to_code_resolver import (
     _normalize_code,
     _build_reverse_map_no_duplicates,
 )
+
+
+@pytest.fixture(autouse=True)
+def _real_pypinyin():
+    """确保拼音匹配用的是真 pypinyin，而不是别处留下的 MagicMock。
+
+    tests/test_notification_semaphore.py 在模块级把若干可选依赖写进
+    sys.modules 且不还原，同一次 pytest 会话里只要它先被收集，这里的
+    lazy_pinyin() 就会拿到桩对象——所有名字的拼音比较都成立，模糊匹配退化成
+    「返回第一个候选」，于是任何输入都被解析成 600519。单跑两个文件都正常，
+    只有同场会话才复现，所以在用例级把真包补回来，结束后原样放回。
+    """
+    stub = sys.modules.get("pypinyin")
+    if stub is not None and not isinstance(stub, MagicMock):
+        yield
+        return
+    sys.modules.pop("pypinyin", None)
+    try:
+        importlib.import_module("pypinyin")
+        yield
+    finally:
+        if stub is None:
+            sys.modules.pop("pypinyin", None)
+        else:
+            sys.modules["pypinyin"] = stub
 
 
 @pytest.fixture()
@@ -50,6 +77,9 @@ def clean_db(request):
     ntc._akshare_cache = None
     ntc._akshare_failure_cache = None
     ntc._akshare_inflight = None
+    # 单名解析结果缓存与上面那组 akshare 批量缓存是两层，漏清它会让本文件在
+    # 完整套件里拿到前序用例写入的 name -> code，单跑却正常。
+    ntc._resolve_cache.clear()
     ntc.stockAliases.clear()
 
 

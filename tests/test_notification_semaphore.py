@@ -10,75 +10,28 @@ Coverage:
 """
 import sys
 import threading
-import types
 import unittest
 from unittest.mock import MagicMock
 
 
 # ---------------------------------------------------------------------------
-# Stub heavy optional deps (must precede project imports)
+# Import the pipeline module
 # ---------------------------------------------------------------------------
-
-def _stub(name: str, **attrs):
-    m = types.ModuleType(name)
-    for k, v in attrs.items():
-        setattr(m, k, v)
-    sys.modules[name] = m
-    return m
-
-
-for _dep in (
-    "litellm",
-    "akshare",
-    "fake_useragent",
-    "pypinyin",
-):
-    if _dep not in sys.modules:
-        sys.modules[_dep] = MagicMock()
-
-if "tenacity" not in sys.modules:
-    def _noop_retry(*a, **kw):
-        return lambda f: f
-    _stub(
-        "tenacity",
-        retry=_noop_retry,
-        stop_after_attempt=lambda n: None,
-        wait_exponential=lambda **kw: None,
-        retry_if_exception_type=lambda e: None,
-        before_sleep_log=lambda *a: None,
-    )
-
-# ---------------------------------------------------------------------------
-# Import pipeline module
-# ---------------------------------------------------------------------------
-
+#
+# 这里以前把 litellm / akshare / pypinyin / tenacity 以及一批 ``src.*`` 项目模块
+# 直接写进 sys.modules 当 MagicMock，为的是避开重依赖的导入开销。那些桩从不还原，
+# 整个 pytest 进程都看得见，代价远大于收益：
+#   - ``pypinyin`` 被桩掉后 name_to_code_resolver 的拼音匹配退化成「返回第一个
+#     候选」，同场会话里 6 个解析用例把任何输入都解析成 600519；
+#   - ``akshare`` 被桩掉后 screening 取数拿不到函数的 __name__；
+#   - ``src.report_language`` 被桩掉后 src/services/empty_news.py 的模块级自检
+#     读到 Mock，本文件单跑必然 RuntimeError。
+# 这些包在 requirements 与 CI 里都是装好的，直接真实导入即可，多花的时间远少于
+# 排查这类跨文件污染。
 def _import_pipeline_constants():
-    """Return pipeline module without instantiating anything."""
-    heavy = [
-        "src.storage",
-        "data_provider",
-        "data_provider.base",
-        "data_provider.realtime_types",
-        "data_provider.us_index_mapping",
-        "src.analyzer",
-        "src.data.stock_mapping",
-        "src.notification",
-        "src.report_language",
-        "src.search_service",
-        "src.services.social_sentiment_service",
-        "src.enums",
-        "src.stock_analyzer",
-        "src.core.trading_calendar",
-        "bot.models",
-        "pandas",
-    ]
-    for mod in heavy:
-        if mod not in sys.modules:
-            sys.modules[mod] = MagicMock()
-
-    sys.modules.setdefault("data_provider.realtime_types", MagicMock())
-
+    """Return the pipeline module without instantiating anything."""
     import src.core.pipeline as pipeline_mod
+
     return pipeline_mod
 
 

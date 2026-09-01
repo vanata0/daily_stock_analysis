@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [修复] 选股成分股取数不再从 akshare 函数对象上反射 `__name__` 拼 `call_name`：该名字用于区分超时预算，而 akshare 入口不保证是带 `__name__` 的普通函数（被替换成 mock、partial 或包装对象时会直接抛 `AttributeError`）；改为与函数一起静态取定。
-- [测试] 修复三处因全局状态泄漏导致的 flaky：`tests/test_notification_semaphore.py` 在模块级把 `pypinyin` 等依赖写进 `sys.modules` 且不还原，同场会话中 `name_to_code_resolver` 的拼音匹配会退化成「返回第一个候选」（任何名字都解析成 600519），现由 `test_name_to_code_resolver` 的 autouse fixture 补回真包；`test_notification_empty_news_disclosure` 的「无搜索渠道」前提改为固定关闭 KPL 注册。
+- [测试] 移除 `tests/test_notification_semaphore.py` 的 sys.modules 桩：它在模块级把 `litellm` / `akshare` / `pypinyin` / `tenacity` 以及 `src.report_language` 等一批项目模块替换成 MagicMock 且从不还原，污染整个 pytest 进程——`name_to_code_resolver` 的拼音匹配会退化成「返回第一个候选」（任何名字都解析成 600519）、screening 取数拿不到 akshare 函数的 `__name__`、`empty_news` 的模块级语言自检读到 Mock 导致该文件单跑必然报错。这些依赖在 requirements 与 CI 中均已安装，改为直接真实导入。`test_notification_empty_news_disclosure` 的「无搜索渠道」前提另行改为固定关闭 KPL 注册。
 - [修复] 题材新闻检索 `search_topic_news` 会把 KPL 这类 `preference_only` 资讯源当通用搜索引擎调用：该路径不传 `stock_code`，KPL 只能返回「仅支持 A 股 6 位代码」的参数错误。补上与其余三处 provider 遍历一致的 `preference_only` 守卫。
 - [测试] 修复搜索用例受本机 `.env` 的 `KPL_ENABLED` 影响：`test_search_news_freshness` 原按 `_providers[0]` 位置打桩，KPL 启用后排在最前会桩错对象导致 Bocha 发出真实请求；改为按类型定位 Bocha，并把 KPL 注册固定为关闭，与 CI 环境一致。`test_search_searxng` 的 `is_available` 断言同此处理。
 - [修复] KPL 个股资金流逐日回溯在上游整体故障时不再打满整个窗口：`get_capital_flow` 原本会把 `wanted*2 + _FLOW_LOOKBACK_SLACK` 天全部请求完（2026-08-18 一次自选股批量分析实测打出 252 个 `chouma-history` 请求、全部 502），既拖慢分析又给故障中的上游加压。现在连续 3 天取数失败即判定上游不可用并放弃剩余回溯，命中限流（429）则立即收手；单日偶发失败被成功日打断后重新计数，不影响正常取数。
